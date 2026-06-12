@@ -1,0 +1,627 @@
+// 日本語
+:lang: ja
+// セクションレベル0 が複数ある場合にbook？
+// articleにしないとChapterが表示されてしまうらしい
+:doctype: article
+
+// 見出し（目次）を左側に表示
+:toc: left
+// 見出し（目次）に表示するセクションレベルの階層
+:toclevels: 3
+// 見出し（目次）のタイトル
+:toc-title: 目次
+// 章見出しのchapterの文字を出力しないように変更
+:chapter-label:
+// セクション番号を表示する
+:sectnums:
+// セクション番号を付与する最大レベル
+:sectnumlevels: 5
+// 見出しのリンク
+:sectlinks:
+:sectanchors:
+
+//イメージ格納フォルダ
+:imagesdir: ./images
+
+// アイコン指定
+:icons: font
+//:iconfont-cdn: ./css/all.css
+
+:example-caption: 例
+:table-caption: 表
+:figure-caption: 図
+
+// PDF関連
+:pdf-style: conf/theme.yml
+:pdf-fontsdir: fonts
+// PDFの表紙を独自の物に変更する
+ifeval::["{converttype}" == "pdf"]
+:notitle:
+:front-cover-image: image:cover_page.pdf[]
+endif::[]
+
+// ソースコードハイライト
+:source-highlighter: coderay
+
+// ドキュメント情報
+:author: 会社名 +
+部署名 +
+課名 +
+TEL：000-0000-0000
+:revnumber: v0.0.0
+:revdate: 2020/03/01
+:copyright: Copyright &#169;2020 SAMPLE COMPANY CORPORATION All right reserved.
+
+// 画像埋め込み
+:data-uri:
+
+= AsciiDoc → Word変換ツール仕様書
+:toc:
+:toclevels: 3
+:sectnums:
+
+== 目的
+
+本ツールは AsciiDoc 形式の文書を Microsoft Word(.docx)形式 に変換するためのツールである。
+
+本資料では、各AsciiDoc記述について以下を対で記載する。
+
+* 入力（AsciiDoc記述例）
+* 出力イメージ（Word変換結果イメージ）
+
+---
+
+== 対応環境
+
+[cols="1,3,7",options="header,autonumber"]
+|===
+|No
+|項目
+|内容
+
+|
+|OS
+|Windows
+
+|
+|PowerShell
+|PowerShell 5.1
+
+|
+|出力形式
+|Microsoft Word (.docx)
+
+|
+|必要ソフト
+|Microsoft Word
+
+|
+|PlantUML
+|PlantUML（図生成時のみ）\nlib\plantuml-1.2025.4.jarに同梱
+|===
+
+---
+
+== 見出し
+
+=== 入力
+
+[source,asciidoc]
+----
+== 目的
+
+=== 前提条件
+
+==== 注意事項
+----
+
+=== 出力イメージ
+
+== 目的
+
+=== 前提条件
+
+==== 注意事項
+
+---
+
+== 段落
+
+=== 入力
+
+[source,asciidoc]
+----
+これは通常の段落です。
+
+これは次の段落です。
+----
+
+=== 出力イメージ
+
+これは通常の段落です。
+
+これは次の段落です。
+
+---
+
+== 強調
+
+=== 入力
+
+[source,asciidoc]
+----
+これは *太字* です。
+
+これは _斜体_ です。
+
+これは *_太字斜体_* です。
+
+これは `code` です。
+----
+
+=== 出力イメージ
+
+これは *太字* です。
+
+これは _斜体_ です。
+
+これは *_太字斜体_* です。
+
+これは `code` です。
+
+---
+
+== 箇条書き
+
+=== 番号なしリスト
+
+==== 入力
+
+[source,asciidoc]
+----
+* 項目1
+* 項目2
+* 項目3
+----
+
+==== 出力イメージ
+
+* 項目1
+* 項目2
+* 項目3
+
+---
+
+=== 番号付きリスト
+
+==== 入力
+
+[source,asciidoc]
+----
+1. 手順1
+2. 手順2
+3. 手順3
+----
+
+==== 出力イメージ
+
+1. 手順1
+2. 手順2
+3. 手順3
+
+---
+
+=== ネストリスト
+
+==== 入力
+
+[source,asciidoc]
+----
+1. 手順
+.. サブ手順1
+.. サブ手順2
+2. 次の手順
+----
+
+==== 出力イメージ
+
+1. 手順
+.. サブ手順1
+.. サブ手順2
+2. 次の手順
+
+---
+
+== Admonition（注意書き）
+
+=== NOTE
+
+==== 入力
+
+[source,asciidoc]
+----
+NOTE: これは補足説明です
+----
+
+==== 出力イメージ
+
+NOTE: これは補足説明です
+
+---
+
+=== WARNING
+
+==== 入力
+
+[source,asciidoc]
+----
+WARNING: JP1サーバ上では実行しないこと
+----
+
+==== 出力イメージ
+
+WARNING: JP1サーバ上では実行しないこと
+
+---
+
+=== IMPORTANT
+
+==== 入力
+
+[source,asciidoc]
+----
+IMPORTANT: 必ずバックアップを取得すること
+----
+
+==== 出力イメージ
+
+IMPORTANT: 必ずバックアップを取得すること
+
+---
+
+== ソースコード
+
+=== 入力
+
+[source,asciidoc]
+----
+[source,powershell]
+----
+Write-Host "Hello"
+Get-Date
+----
+----
+
+=== 出力イメージ
+
+[source,powershell]
+----
+Write-Host "Hello"
+Get-Date
+----
+
+---
+
+== 改ページ
+
+=== 入力
+
+[source,asciidoc]
+----
+<<<
+----
+
+=== 出力イメージ
+
+（Wordの改ページ）
+
+---
+
+== 画像
+
+=== 通常画像
+
+==== 入力
+
+[source,asciidoc]
+----
+image::sample.png[]
+----
+
+==== 出力イメージ
+
+image::sample.png[]
+
+---
+
+=== キャプション付き画像
+
+==== 入力
+
+[source,asciidoc]
+----
+.システム構成図
+image::system.png[]
+----
+
+==== 出力イメージ
+
+.システム構成図
+image::system.png[]
+
+---
+
+== テーブル
+
+=== 通常テーブル
+
+==== 入力
+
+[source,asciidoc]
+----
+[cols="3,7",options="header"]
+|===
+|項目
+|説明
+
+|JP1
+|監視ツール
+|===
+----
+
+==== 出力イメージ
+
+[cols="3,7",options="header"]
+|===
+|項目
+|説明
+
+|JP1
+|監視ツール
+|===
+
+---
+
+=== colspan
+
+==== 入力
+
+[source,asciidoc]
+----
+[cols="2,2"]
+|===
+|A
+|B
+
+2+|結合セル
+|===
+----
+
+==== 出力イメージ
+
+[cols="2,2"]
+|===
+|A
+|B
+
+2+|結合セル
+|===
+
+---
+
+=== rowspan
+
+==== 入力
+
+[source,asciidoc]
+----
+[cols="2,2"]
+|===
+2.1+|縦結合
+|A
+
+|B
+|===
+----
+
+==== 出力イメージ
+
+[cols="2,2"]
+|===
+2.1+|縦結合
+|A
+
+|B
+|===
+
+---
+
+== 独自拡張仕様
+
+本ツール独自の拡張仕様を以下に示す。
+
+---
+
+=== 自動連番テーブル
+
+==== 入力
+
+[source,asciidoc]
+----
+[cols="1,3,7",options="header,autonumber"]
+|===
+|No
+|フォルダ名
+|説明
+
+|
+|00_JP1資材管理
+|JP1資材作成時の作業フォルダを格納する
+
+|
+|01_JP1適用後の設定ファイルとエビデンス
+|適用後の設定ファイルおよびエビデンスを格納する
+|===
+----
+
+==== 出力イメージ
+
+[cols="1,3,7",options="header"]
+|===
+|No
+|フォルダ名
+|説明
+
+|1
+|00_JP1資材管理
+|JP1資材作成時の作業フォルダを格納する
+
+|2
+|01_JP1適用後の設定ファイルとエビデンス
+|適用後の設定ファイルおよびエビデンスを格納する
+|===
+
+---
+
+== PlantUML
+
+=== 入力
+
+[source,asciidoc]
+----
+[plantuml]
+....
+Alice -> Bob : Hello
+....
+----
+
+=== 出力イメージ
+
+[plantuml]
+....
+Alice -> Bob : Hello
+....
+
+---
+
+== 表紙属性
+
+=== 入力
+
+[source,asciidoc]
+----
+:title: JP1更新手順書
+:subtitle: カスタムMIB対応
+:author: AMI監視チーム
+:revnumber: v1.0.0
+:revdate: 2026/06/01
+----
+
+=== 出力イメージ
+
+[cols="3,7",options="header"]
+|===
+|項目
+|値
+
+|タイトル
+|JP1更新手順書
+
+|サブタイトル
+|カスタムMIB対応
+
+|作成者
+|AMI監視チーム
+
+|版数
+|v1.0.0
+
+|改定日
+|2026/06/01
+|===
+
+---
+
+== 制限事項
+
+[cols="3,7",options="header,autonumber"]
+|===
+|No
+|項目
+|内容
+
+|
+|SVG
+|環境によっては表示できない場合がある
+
+|
+|HTML埋め込み
+|未対応
+
+|
+|複雑なAsciidoctor拡張
+|一部未対応
+
+|
+|複雑なテーブル
+|レイアウトが崩れる可能性がある
+|===
+
+---
+
+== 推奨記述ルール
+
+[cols="1,9",options="header,autonumber"]
+|===
+|No
+|推奨事項
+
+|
+|テーブルには options="header" を付与する
+
+|
+|手順は番号付きリストを利用する
+
+|
+|補足説明には NOTE を利用する
+
+|
+|危険操作には WARNING を利用する
+
+|
+|長いコードは source ブロックを利用する
+
+|
+|表紙情報は属性定義を利用する
+|===
+
+---
+
+== 今後の拡張予定
+
+[cols="1,9",options="header,autonumber"]
+|===
+|No
+|内容
+
+|
+|セル背景色対応
+
+|
+|セル中央寄せ対応
+
+|
+|SVG対応強化
+
+|
+|シンタックスハイライト対応
+
+|
+|Admonitionボックス強化
+
+|
+|PDF出力対応
+
+|
+|スタイルテンプレート化
+|===

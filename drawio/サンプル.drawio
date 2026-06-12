@@ -1,0 +1,19 @@
+<mxfile host="Electron">
+  <diagram name="ページ-1" id="Nh3a0U_EneVUIrGgfJT9">
+    <mxGraphModel dx="918" dy="593" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="YeaDzWyrihKHCdrvMiio-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="システム構成図" vertex="1">
+          <mxGeometry height="40" width="110" x="20" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="YeaDzWyrihKHCdrvMiio-4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="サンプル" vertex="1">
+          <mxGeometry height="110" width="220" x="140" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="YeaDzWyrihKHCdrvMiio-5" parent="1" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=#232F3E;fillColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda_function;" value="Lambda&#xa;Function" vertex="1">
+          <mxGeometry height="60" width="60" x="380" y="280" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

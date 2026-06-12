@@ -1,0 +1,69 @@
+[[subdoca]]
+=== 差し込み文書A
+
+↓で確認しているように、ドキュメントのフォルダを変えてしまうと、サブドキュメントを編集する際に
+imagesフォルダが見えなくなってしまうので、全てルートで管理した方が良いと思います。
+
+==== 段落
+
+. あ
+.. ああ
+
+. い
+.. いい
+... いいい
+
+. う
+.. うう
+
+サブ文書内の画像参照
+
+* ↓と指定している場合、imagesを起点にした相対パス
+```
+:imagesdir: ./images
+```
+
+* ↓と指定している場合、かimagesdirが指定されていない場合はメインのadocを起点にした相対パス
+```
+:imagesdir: ./
+```
+
+imagesフォルダに全ての画像を集約する方向で使用することとします。  +
+images配下にドキュメントと同じ構成のサブフォルダを作ってもいいかもしれないが、基本的にはadocのファイル名_画像名.pngのようにした方がいいと思います。 +
+パスの指定の仕方で画像のリンクが切れてしまい埋め込まれない状態が発生するので気を付けてください +
+
+* adocと画像の配置イメージ
+```
+main.adoc
+subdoc/subdoca.adoc
+subdoc/image_b.png
+subdoc/images/image_c.png
+images/image_a.png
+images/subdoc/image_d.png
+```
+
+* 以下の指定をする()
+```
+image::image_a.png[]
+image::images/image_a.png[]
+image::./images/image_a.png[]
+image::image_b.png[]
+image::./image_b.png[]
+image::images/image_c.png[]
+image::./images/image_c.png[]
+image::image_c.png[]
+image::subdoc/image_d.png[]
+```
+
+* 出力イメージ
+
+image::image_a.png[]
+image::images/image_a.png[]
+image::./images/image_a.png[]
+image::image_b.png[]
+image::./image_b.png[]
+image::images/image_c.png[]
+image::./images/image_c.png[]
+image::image_c.png[]
+image::subdoc/image_d.png[]
+

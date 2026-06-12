@@ -1,0 +1,276 @@
+﻿{
+  "Document": {
+    "PageSetup": {
+      "TopMarginMm": 25,
+      "BottomMarginMm": 20,
+      "LeftMarginMm": 25,
+      "RightMarginMm": 20
+    }
+  },
+  "CoverPage": {
+    "Mode": "Template",
+    "TemplatePath": ".\\template\\cover-template.docx"
+  },
+  "HeaderFooter": {
+    "Header": {
+      "Text": "{title}  {revnumber}",
+      "Style": {
+        "FontName": "游ゴシック",
+        "Size": 9,
+        "Bold": false,
+        "Italic": false,
+        "Alignment": "right",
+        "SpaceAfter": 0,
+        "LineSpacingRule": "Exactly",
+        "LineSpacing": 9
+      }
+    },
+    "Footer": {
+      "Text": "{copyright}",
+      "Style": {
+        "FontName": "游ゴシック",
+        "Size": 8,
+        "Bold": false,
+        "Italic": false,
+        "Alignment": "center",
+        "SpaceBefore": 0,
+        "LineSpacingRule": "Exactly",
+        "LineSpacing": 8
+      }
+    }
+  },
+  "PlantUml": {
+    "Enabled": true,
+    "JavaPath": "java",
+    "JarPath": ".\\lib\\plantuml-1.2025.4.jar",
+    "OutputDir": ".\\generated-images",
+    "DefaultFormat": "svg"
+  },
+  "DrawIo": {
+    "Enabled": true,
+    "CliPath": "C:\\Program Files\\draw.io\\draw.io.exe",
+    "OutputDir": ".\\generated-images",
+    "DefaultFormat": "png"
+  },
+  "Image": {
+    "MaxWidthMm": 160
+  },
+  "Styles": {
+    "Title": {
+      "FontName": "游ゴシック",
+      "Size": 20,
+      "Bold": true,
+      "Color": 0,
+      "Alignment": "center",
+      "SpaceAfter": 12,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 12
+    },
+    "Subtitle": {
+      "FontName": "游ゴシック",
+      "Size": 12,
+      "Bold": false,
+      "Color": 0,
+      "Alignment": "center",
+      "SpaceAfter": 12,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 12
+    },
+    "Owner": {
+      "FontName": "游ゴシック",
+      "Size": 10,
+      "Bold": false,
+      "Color": 0,
+      "Alignment": "right",
+      "SpaceAfter": 6,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 10 
+    },
+    "Revision": {
+      "FontName": "游ゴシック",
+      "Size": 10,
+      "Bold": false,
+      "Color": 0,
+      "Alignment": "right",
+      "SpaceAfter": 3,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 10
+    },
+    "Copyright": {
+      "FontName": "游ゴシック",
+      "Size": 9,
+      "Bold": false,
+      "Color": 0,
+      "Alignment": "center",
+      "SpaceAfter": 12,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 9
+    },
+    "Heading1": {
+      "FontName": "游ゴシック",
+      "FontSize": 16,
+      "Bold": true,
+      "Color": 0,
+      "Alignment": "Left",
+      "KeepWithNext": true,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 12
+    },
+    "Heading2": {
+      "FontName": "游ゴシック",
+      "FontSize": 14,
+      "Bold": true,
+      "Color": 0,
+      "Alignment": "Left",
+      "KeepWithNext": true,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 12
+    },
+    "Heading3": {
+      "FontName": "游ゴシック",
+      "FontSize": 12,
+      "Bold": true,
+      "Color": 0,
+      "Alignment": "Left",
+      "KeepWithNext": true,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 12
+    },
+    "Heading4": {
+      "FontName": "游ゴシック",
+      "FontSize": 11,
+      "Bold": true,
+      "Color": 0,
+      "Alignment": "Left",
+      "KeepWithNext": true,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 11
+    },
+    "HeadingDefault": {
+      "FontName": "游ゴシック",
+      "Size": 11,
+      "Bold": true,
+      "Color": 0,
+      "SpaceBefore": 6,
+      "SpaceAfter": 4,
+      "KeepWithNext": true,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 11
+    },
+    "Body": {
+      "FontName": "游ゴシック",
+      "Size": 10.5,
+      "Bold": false,
+      "Color": 0,
+      "SpaceAfter": 4,
+      "WidowControl": false,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 11
+    },
+    "Bullet": {
+      "FontName": "游ゴシック",
+      "Size": 10.5,
+      "Bold": false,
+      "Color": 0,
+      "SpaceAfter": 2,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 12
+    },
+    "Numbered": {
+      "FontName": "游ゴシック",
+      "Size": 10.5,
+      "Bold": false,
+      "Color": 0,
+      "SpaceAfter": 2,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 12
+    },
+    "Admonition": {
+      "FontName": "游ゴシック",
+      "Size": 10,
+      "Bold": true,
+      "Color": 0,
+      "SpaceBefore": 0,
+      "SpaceAfter": 0,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 12,
+      "Label": {
+        "Important": "❗重要: ",
+        "Warning": "⚠ 警告: ",
+        "Caution": "⚠ 注意: ",
+        "Note": "📝注記: ",
+        "Tip": "💡ヒント: "
+      },
+      "Colors": {
+        "Important": "FFE699",
+        "Warning": "FFF2CC",
+        "Caution": "FFF2CC",
+        "Note": "D9E1F2",
+        "Tip": "E2EFDA"
+      }
+    },
+    "CodeCaption": {
+      "FontName": "游ゴシック",
+      "Size": 10,
+      "Bold": true,
+      "Color": 0,
+      "Alignment": "center",
+      "SpaceBefore": 6,
+      "SpaceAfter": 3,
+      "KeepWithNext": true,
+      "LineSpacingRule": "Exactly"
+    },
+    "Code": {
+      "FontName": "Cascadia Code",
+      "Size": 9,
+      "Bold": false,
+      "Color": 0,
+      "BackgroundColor": "F3F3F3",
+      "LeftIndent": 12,
+      "SpaceBefore": 6,
+      "SpaceAfter": 6,
+      "LineSpacingRule": "Exactly",
+      "LineSpacing": 11
+    },
+    "Table": {
+      "NumberWidth": 24
+    },
+    "TableCaption": {
+      "FontName": "游ゴシック",
+      "Size": 10,
+      "Bold": true,
+      "Color": 0,
+      "Alignment": "left",
+      "SpaceBefore": 6,
+      "SpaceAfter": 3,
+      "KeepWithNext": true,
+      "LineSpacingRule": "Exactly"
+    },
+    "TableHeader": {
+      "FontName": "游ゴシック",
+      "Size": 10,
+      "Bold": true,
+      "Color": 0,
+      "BackgroundColor": "E6E6E6",
+      "LineSpacingRule": "Exactly"
+    },
+    "TableBody": {
+      "FontName": "游ゴシック",
+      "Size": 10,
+      "Bold": false,
+      "Color": 0,
+      "LineSpacingRule": "Exactly"
+    },
+    "FigureCaption": {
+      "FontName": "游ゴシック",
+      "Size": 10,
+      "Bold": true,
+      "Color": 0,
+      "Alignment": "center",
+      "SpaceBefore": 6,
+      "SpaceAfter": 3,
+      "KeepWithNext": true,
+      "LineSpacingRule": "Exactly"
+    }
+  }
+}

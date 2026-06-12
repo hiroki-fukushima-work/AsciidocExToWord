@@ -1,0 +1,460 @@
+﻿// 日本語
+:lang: ja
+// セクションレベル0 が複数ある場合にbook？
+// articleにしないとChapterが表示されてしまうらしい
+:doctype: article
+
+// 見出し（目次）を左側に表示
+:toc: left
+// 見出し（目次）に表示するセクションレベルの階層
+:toclevels: 3
+// 見出し（目次）のタイトル
+:toc-title: 目次
+// 章見出しのchapterの文字を出力しないように変更
+:chapter-label:
+// セクション番号を表示する
+:sectnums:
+// セクション番号を付与する最大レベル
+:sectnumlevels: 5
+// 見出しのリンク
+:sectlinks:
+:sectanchors:
+
+//イメージ格納フォルダ
+:imagesdir: ./images
+
+// アイコン指定
+:icons: font
+//:iconfont-cdn: ./css/all.css
+
+:example-caption: 例
+:table-caption: 表
+:figure-caption: 図
+
+// PDF関連
+:pdf-style: conf/theme.yml
+:pdf-fontsdir: fonts
+// PDFの表紙を独自の物に変更する
+ifeval::["{converttype}" == "pdf"]
+:notitle:
+:front-cover-image: image:cover_page.pdf[]
+endif::[]
+
+// ソースコードハイライト
+:source-highlighter: coderay
+
+// ドキュメント情報
+:author: 会社名 +
+部署名 +
+課名 +
+TEL：000-0000-0000
+:revnumber: v0.0.0
+:revdate: 2020/03/01
+:copyright: Copyright &#169;2020 SAMPLE COMPANY CORPORATION All right reserved.
+
+// 画像埋め込み
+:data-uri:
+
+= ASCIIDOCの使い方 : サブタイトルがあればここに書く
+
+== ASCIIDOCって？
+まだ使いこなせていませんが、Markdownで不便だったところが解消出来ます。 +
+
+* 番号付の段落で階層表現が出来る
+* ことと、テーブル内での改行や、セルの結合が出来る
+* ドキュメントを分割して好きな所でインポート出来る（これはMarkdownでも出来る？）
+* Markdownは方言がおおくて、変換される見た目が大きく違ったが、方言が少ない（ASCIIDOCも見た目が違うところがありますが方言は少ないです）
+
+<<<
+== 環境構築手順
+
+=== 一括インストール
+   . initialScriptsフォルダ内のsetupDev.batを実行してください
+
+=== 個別インストール
+  過去の記述を残しているだけですので、一括インストールを使ってインストールしてください
+  インストールを行うとVSCodeでのAsciiDocプレビュー時に利用するKrokiを実行するタスクがタスクマネージャに登録されます
+
+==== Rubyのインストール
+  https://rubyinstaller.org/downloads  
+  ここからRuby（2.2以降）をダウンロードする
+  このメモを書いた時には2.7.0のWITHOUT DEVKITをインストールしました
+
+==== PLANTUML関連のインストール
+  ASCIIDOCの場合インストールしなくてもいいみたい +
+  あとでgemでasciidoctor-diagramを入れるのでそこで解決されるようです。 +
+  うまくいかない場合はここにある物をインストールしてパスを通せば動くと思います。
+
+  . Java8をインストールする +
+    https://www.java.com/ja/download/manual.jsp +
+    ここからインストーラーをダウンロードしてインストールしてください  
+
+  . PLANTUMLをインストールする +
+    http://plantuml.com/download +
+    ここからインストーラーをダウンロードしてインストールしてください  
+
+  . Graphvizをインストールする +
+    http://www.graphviz.org/Download_windows.php +
+    ここからインストーラーをダウンロードしてインストールしてください  
+
+<<<
+==== ASCIIDOCTOR関連のインストール
+    . Rubyのgemを使ってインストールするためRubyにProxyの設定を追加します +
+    *★Proxyを使わない環境の場合は必要ありません* +
+      c:\\users\\[ユーザーID]\\.gemrc を以下のように編集する
++
+```
+    gem: --no-ri --no-rdoc
+    http_proxy: http://[ユーザーID]:[パスワード]@proxyserver:8080
+    https_proxy: http://[ユーザーID]:[パスワード]@proxyserver:8080
+```
+
+    環境変数に登録しても可
++ 
+```
+set http_proxy=http://[ユーザーID]:[パスワード]@proxyserver:8080
+set https_proxy=http://[ユーザーID]:[パスワード]@proxyserver:8080
+```
+
+  . コマンドプロンプトを以下のコマンドを実行してASCIIDOC関連のモジュールをインストールする
++ 
+```
+: asciidoctorのインストール
+gem install asciidoctor
+: asciidoctor-pdfのインストール
+gem install --pre asciidoctor-pdf
+: コードのシンタックスハイライト用
+gem install coderay
+: PDF変換のレイアウト崩れ対応
+gem install asciidoctor-pdf-cjk
+: PlantUMLなどの図を使用
+gem install asciidoctor-diagram
+```
+
+<<<
+== 変換方法
+convert.bat を実行するとHTMLとPDF変換に変換します
+~JenkinsのJOBでもconvert.batを呼び出してHTML,PDF変換をするようにしました。~
+
+.変換バッチファイル convert.bat
+[source,,indent=1]
+----
+include::convert.bat[]
+----
+
+== 表紙
+  ASCIIDOCの表紙機能は貧弱で、たいていのプロジェクトは表紙だけは凝っていることが多いので、表紙についてはWORDで編集した物をPDF変換して結合するようにしました。 +
+  conver\cover_page.docx
+  を各プロジェクト等の体裁に合わせて編集してください。
+  convert.batの中でWORDをPDFに変換してPDFへ結合するようにしてあります。
+
+
+== リファレンスサンプル
+このドキュメントのソースコードを参照して下さい
+
+=== ドキュメント情報
+表紙以外のASCIIDOC本文部分で使用する情報は、ADOCのヘッダー部分に定義します。 +
+以下のように定義してください。下記のサンプルでは改行していますが、改行には対応していないようです。
+
+```
+:author: 会社名 +
+部署名 +
+課名 +
+TEL：000-0000-0000
+:revnumber: v0.0.0
+:revdate: 2020/03/01
+:copyright: Copyright &#169;2020 SAMPLE COMPANY CORPORATION All right reserved.
+```
+
+タイトルとサブタイトルはレベル0のタイトルが使われるようです +
+PDF変換時はタイトルを出力しない代わりにcover_page.docで置き換わりますので<<表紙>>のタイトルとサブタイトルと同じ文字にしてください。
+
+```
+= ASCIIDOCの使い方 : サブタイトル
+```
+
+=== アンカーの確認
+サブドキュメントにアンカーを定義すると最後にincludeされたドキュメントのアンカーに飛びます <<subdoca>> +
+普通のアンカー <<table_sec>>
+
+<<<
+=== Draw.ioの図を埋め込むには？ ★★★独自拡張★★★
+システム構成図などをDraw.ioで書いて埋め込むことが出来ます
+**__現在SVGには非対応__**
+
+* Draw.ioサンプルコード
+
+```
+[drawio,generated-image-format="png",file="drawio/サンプル.drawio",caption="サンプル構成図"]
+```
+
+[drawio,generated-image-format="png",file="drawio/サンプル.drawio",caption="サンプル構成図"]
+
+
+
+=== シーケンス図を埋め込むには？
+以下のようなコードをadocファイルに埋め込んでおくと、UMLの画像に変換して取り込んでくれます。
+
+* UMLサンプルコード
+
+```
+[plantuml,generated-image-format="svg"]
+----
+@startuml
+title シーケンス図のサンプル
+hide footbox
+
+actor ユーザー as user
+participant 制御 as control <<Control>>
+participant "<u>共通データ</u>" as model <<Model>>
+participant 画面 <<View>> #98FB98
+
+user -> control : 検索
+activate control
+create model
+control -> model : << new >>
+control -> model : 検索
+activate model
+control <-- model : 結果
+note right : 最大100件
+deactivate model
+destroy model
+
+control -> view : 表示(結果)
+activate view
+deactivate control
+loop 1, データ数
+  view -> view : データの表示
+end
+view --> user
+deactivate view
+
+@enduml
+----
+```
+
+==== シーケンス図サンプル
+
+* UMLサンプルイメージ
+
+[plantuml,generated-image-format="svg"]
+----
+@startuml
+title "シーケンス図のサンプル"
+hide footbox
+
+actor "ユーザー" as user
+participant "制御" as control
+participant "共通データ" as model
+participant "画面" as view #98FB98
+
+user -> control : 検索
+activate control
+create model
+control -> model : «new»
+control -> model : 検索
+activate model
+control <-- model : 結果
+note right : 最大100件
+deactivate model
+destroy model
+
+control -> view : 表示(結果)
+activate view
+deactivate control
+loop 1, データ数
+  view -> view : データの表示
+end
+view --> user
+deactivate view
+@enduml
+----
+
+=== アイコンを指定する
+
+```
+[NOTE]
+====
+ノートを書きます。
+====
+ 
+[CAUTION]
+====
+注意を書きます
+====
+ 
+[TIP]
+====
+Tipを書きます
+====
+
+NOTE: NOTE
+
+TIP: TIP
+
+IMPORTANT: IMPORTANT
+
+WARNING: WARNING
+
+CAUTION: CAUTION
+```
+
+[NOTE]
+====
+ノートを書きます。
+====
+ 
+[CAUTION]
+====
+注意を書きます
+====
+ 
+[TIP]
+====
+Tipを書きます
+====
+
+NOTE: NOTE
+
+TIP: TIP
+
+IMPORTANT: IMPORTANT
+
+WARNING: WARNING
+
+CAUTION: CAUTION
+
+=== Twitterのアイコンなど
+
+```
+icon:font[]
+icon:fire[] 
+icon:hand-stop-o[] 
+icon:amazon[]
+[aqua]#icon:twitter[]#
+```
+
+icon:font[]
+icon:fire[] 
+icon:hand-stop-o[] 
+icon:amazon[]
+[aqua]#icon:twitter[]#
+
+<<<
+=== 画像の埋め込み
+画像を埋め込む場合は、ヘッダーでイメージ格納フォルダを指定して
+HTML内にデータを埋め込む指定をしておく
+
+```
+// 画像フォルダの指定
+:imagesdir: ./images
+// イメージをHTML内に埋め込む指定
+:data-uri:
+
+// イメージを差し込む個所のサンプル
+image::imagesample.png[]
+```
+
+image::imagesample.png[]
+
+<<<
+↓ここにドキュメントが挿入されるはず
+
+include::subdoc/subdoca.adoc[]
+
+<<<
+[[table_sec]]
+=== 表を埋め込む
+Ascii Docでは表のセル結合やセル内での改行が出来るので、複雑な表現を実現出来ます。 +
+また、単純な表の場合はCSVを読み込んで表にするなど選択の幅もあります。
+
+参考)
+https://qiita.com/hotteam/items/80dc15012bde4d35de24
+
+
+.テーブル内タグ
+[cols="1,5a"]
+|====
+|No|項目
+|1|対応ブラウザ
+
+* Firefox
+* Chrome
+* edge
+|2| 対応OS
+
+. Windows
+. Linux
+. Mac
+|====
+
+```
+[cols="<1,^2,>2", options="header,autowidth"]
+|============================
+|左寄せ|中央寄せ|右寄せ
+
+|左寄せ +
+改行出来る
+|中央寄せ +
+改行出来る
+|右寄せ +
+改行出来る
+
+|左寄せ +
+改行出来る
+2.+^.|中央寄せ +
+結合も改行も出来る
+* aaa
+* bbb
+|============================
+```
+
+[cols="<1,^2,>2", options="header,autowidth"]
+|============================
+|左寄せ|中央寄せ|右寄せ
+
+|左寄せ +
+改行出来る
+|中央寄せ +
+改行出来る
+|右寄せ +
+改行出来る
+
+|左寄せ +
+改行出来る
+2.+^.|中央寄せ +
+結合も改行も出来る +
+aaa +
+bbb
+|============================
+ 
+
+[cols="1a,2a,2a", options="header,autowidth"]
+|============================
+|A|B|C
+
+|A
+
+* A-1
+* A-2
+* A-3
+|. aaa
+. bbb
+|C +
+改行出来る
+
+h|1セルだけ
+ヘッダー指定
+2+|列結合
+|============================
+ 
+
+
+<<<
+↓ここにも同じドキュメントが挿入されるはず
+
+include::subdoc/subdoca.adoc[]
+
+=== アンカーの確認
+サブドキュメントにアンカーを定義すると最後にincludeされたドキュメントのアンカーに飛びます <<subdoca>> +
+普通のアンカー <<table_sec>>
