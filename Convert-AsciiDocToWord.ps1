@@ -1,13 +1,8 @@
 ﻿[CmdletBinding()]
 
 param(
-    # [string]$AdocFullPath  = ".\AsciiDocSample.adoc",
-    # [string]$OutputFullPath = ".\out\AsciiDocSample.docx",
-    # [string]$ConfigFullPath = ".\conf\word-style.sample.json",
-    # [string]$TemplateFullPath = ".\Template\cover-template.docx"
-
-    [string]$AdocFullPath = "C:\workspace\査証\見積\システム構成\構成検討.adoc",
-    [string]$OutputFullPath = "C:\workspace\査証\見積\システム構成\out\構成検討.docx",
+    [string]$AdocFullPath = ".\AsciiDocSample.adoc",
+    [string]$OutputFullPath = ".\out\AsciiDocSample.docx",
     [string]$ConfigFullPath = ".\conf\word-style.sample.json",
     [string]$TemplateFullPath = ".\Template\cover-template.docx"
 
@@ -235,7 +230,6 @@ function Normalize-InlineText {
         }
     }
 
-    $value = [regex]::Replace($value, '<<([^,>]+)(?:,([^>]+))?>>', '$2')
     $value = [regex]::Replace($value, 'image::([^\[]+)\[(.*?)\]', '[画像: $1]')
     $value = [regex]::Replace($value, 'icon:[^\[]+\[(.*?)\]', '$1')
     $value = [regex]::Replace($value, '\[(?<role>[^\]]+)\]#(?<body>.*?)#', '${body}')
@@ -246,6 +240,167 @@ function Normalize-InlineText {
     $value = $value -replace '\+$', ''
     $value = $value -replace '&#169;', '©'
     return $value.TrimEnd()
+}
+
+function Convert-AnchorIdToBookmarkName {
+    param(
+        [string]$AnchorId,
+        [hashtable]$UsedNames
+    )
+
+    $raw = if ([string]::IsNullOrWhiteSpace($AnchorId)) { 'anchor' } else { $AnchorId.Trim() }
+    $normalized = [regex]::Replace($raw, '[^A-Za-z0-9_]', '_')
+
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        $normalized = 'anchor'
+    }
+
+    if ($normalized -notmatch '^[A-Za-z]') {
+        $normalized = 'a_' + $normalized
+    }
+
+    $base = 'adoc_' + $normalized
+    if ($base.Length -gt 40) {
+        $base = $base.Substring(0, 40)
+    }
+
+    if ($null -eq $UsedNames) {
+        return $base
+    }
+
+    $candidate = $base
+    $suffix = 1
+    while ($UsedNames.ContainsKey($candidate)) {
+        $suffixText = '_' + [string]$suffix
+        $maxBaseLength = 40 - $suffixText.Length
+        $trimmedBase = if ($base.Length -gt $maxBaseLength) { $base.Substring(0, $maxBaseLength) } else { $base }
+        $candidate = $trimmedBase + $suffixText
+        $suffix++
+    }
+
+    $UsedNames[$candidate] = $true
+    return $candidate
+}
+
+function Add-WordBookmarkSafe {
+    param(
+        $Document,
+        $Range,
+        [string]$BookmarkName
+    )
+
+    if (-not $Document -or -not $Range -or [string]::IsNullOrWhiteSpace($BookmarkName)) {
+        return $false
+    }
+
+    try {
+        if ($Document.Bookmarks.Exists($BookmarkName)) {
+            $Document.Bookmarks.Item($BookmarkName).Delete()
+        }
+
+        $Document.Bookmarks.Add($BookmarkName, $Range) | Out-Null
+        return $true
+    }
+    catch {
+        Write-DebugLog "BOOKMARK-ADD-FAILED name=[$BookmarkName] error=[$($_.Exception.Message)]"
+        return $false
+    }
+}
+
+function Resolve-InternalLinkBookmark {
+    param(
+        [string]$TargetId,
+        [hashtable]$InternalLinkMap
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TargetId) -or -not $InternalLinkMap) {
+        return $null
+    }
+
+    if ($InternalLinkMap.ContainsKey($TargetId)) {
+        return [string]$InternalLinkMap[$TargetId]
+    }
+
+    return $null
+}
+
+function Parse-InlineLinkSegments {
+    param([string]$Text)
+
+    $segments = New-Object System.Collections.Generic.List[object]
+
+    if ($null -eq $Text) {
+        return $segments
+    }
+
+    $pattern = 'link:(?<linkurl>[^\s\[]+)\[(?<linklabel>[^\]]*)\]|xref:(?<xrefid>[^\[\s]+)\[(?<xreflabel>[^\]]*)\]|<<(?<xid>[^,>]+)(?:,(?<xlabel>[^>]+))?>>|(?<rawurl>https?://[^\s\[]+)(?:\[(?<rawlabel>[^\]]+)\])?'
+    $linkMatches = [regex]::Matches($Text, $pattern)
+    $pos = 0
+
+    foreach ($m in $linkMatches) {
+        if ($m.Index -gt $pos) {
+            $segments.Add([pscustomobject]@{
+                    Type = 'text'
+                    Text = $Text.Substring($pos, $m.Index - $pos)
+                })
+        }
+
+        if ($m.Groups['linkurl'].Success) {
+            $url = [string]$m.Groups['linkurl'].Value
+            $label = [string]$m.Groups['linklabel'].Value
+            if ([string]::IsNullOrWhiteSpace($label)) { $label = $url }
+
+            $segments.Add([pscustomobject]@{
+                    Type = 'external'
+                    Url  = $url
+                    Text = $label
+                })
+        }
+        elseif ($m.Groups['xrefid'].Success) {
+            $targetId = [string]$m.Groups['xrefid'].Value
+            $label = [string]$m.Groups['xreflabel'].Value
+            if ([string]::IsNullOrWhiteSpace($label)) { $label = $targetId }
+
+            $segments.Add([pscustomobject]@{
+                    Type     = 'internal'
+                    TargetId = $targetId.Trim()
+                    Text     = $label
+                })
+        }
+        elseif ($m.Groups['xid'].Success) {
+            $targetId = [string]$m.Groups['xid'].Value
+            $label = [string]$m.Groups['xlabel'].Value
+            if ([string]::IsNullOrWhiteSpace($label)) { $label = $targetId }
+
+            $segments.Add([pscustomobject]@{
+                    Type     = 'internal'
+                    TargetId = $targetId.Trim()
+                    Text     = $label
+                })
+        }
+        elseif ($m.Groups['rawurl'].Success) {
+            $url = [string]$m.Groups['rawurl'].Value
+            $label = [string]$m.Groups['rawlabel'].Value
+            if ([string]::IsNullOrWhiteSpace($label)) { $label = $url }
+
+            $segments.Add([pscustomobject]@{
+                    Type = 'external'
+                    Url  = $url
+                    Text = $label
+                })
+        }
+
+        $pos = $m.Index + $m.Length
+    }
+
+    if ($pos -lt $Text.Length) {
+        $segments.Add([pscustomobject]@{
+                Type = 'text'
+                Text = $Text.Substring($pos)
+            })
+    }
+
+    return $segments
 }
 
 function Get-WordConstant {
@@ -607,6 +762,7 @@ function Append-TextParagraph {
         $Document,
         [string]$Text,
         $StyleConfig,
+        [hashtable]$InternalLinkMap,
         [switch]$NoTrailingParagraph
     )
 
@@ -616,19 +772,12 @@ function Append-TextParagraph {
     $paragraphStart = $cursor.Start
     $inlineRanges = @()
 
-    # http://... / https://...
-    # http://...[表示名] / https://...[表示名]
-    $linkPattern = '(https?://[^\s\[]+)(?:\[([^\]]+)\])?'
+    $segments = Parse-InlineLinkSegments -Text $Text
 
-    $matches = [regex]::Matches($Text, $linkPattern)
+    foreach ($segment in $segments) {
 
-    $pos = 0
-
-    foreach ($m in $matches) {
-        # リンク前の通常テキスト
-        if ($m.Index -gt $pos) {
-            $beforeText = $Text.Substring($pos, $m.Index - $pos)
-            $runs = Convert-InlineEmphasis -Text $beforeText
+        if ($segment.Type -eq 'text') {
+            $runs = Convert-InlineEmphasis -Text ([string]$segment.Text)
 
             foreach ($run in $runs) {
                 $runText = [string]$run.Text
@@ -645,61 +794,70 @@ function Append-TextParagraph {
 
                 $cursor.SetRange($runRange.End, $runRange.End)
             }
+
+            continue
         }
 
-        # リンク部分
-        $url = [string]$m.Groups[1].Value
-        $label = $url
+        if ($segment.Type -eq 'external') {
+            $url = [string]$segment.Url
+            $label = [string]$segment.Text
 
-        if ($m.Groups.Count -ge 3 -and $m.Groups[2].Success -and
-            -not [string]::IsNullOrWhiteSpace($m.Groups[2].Value)) {
-            $label = [string]$m.Groups[2].Value
-        }
+            try {
+                $linkRange = $Document.Range($cursor.End, $cursor.End)
 
-        try {
-            # 空の Range に対して Hyperlink を直接追加する。
-            # 先に Range.Text を設定すると、Word COM 側でリンク範囲が後続段落まで伸びることがある。
-            $linkRange = $Document.Range($cursor.End, $cursor.End)
+                $hyperlink = $Document.Hyperlinks.Add(
+                    $linkRange,
+                    $url,
+                    '',
+                    '',
+                    $label
+                )
 
-            $hyperlink = $Document.Hyperlinks.Add(
-                $linkRange,
-                $url,
-                '',
-                '',
-                $label
-            )
-
-            # Hyperlink 作成後の実 Range.End を使って cursor を進める
-            $cursor.SetRange($hyperlink.Range.End, $hyperlink.Range.End)
-        }
-        catch {
-            # 失敗時は通常テキストとして挿入
-            $linkRange = $Document.Range($cursor.End, $cursor.End)
-            $linkRange.Text = $label
-            $cursor.SetRange($linkRange.End, $linkRange.End)
-        }
-        $pos = $m.Index + $m.Length
-    }
-
-    # 最後の通常テキスト
-    if ($pos -lt $Text.Length) {
-        $afterText = $Text.Substring($pos)
-        $runs = Convert-InlineEmphasis -Text $afterText
-
-        foreach ($run in $runs) {
-            $runText = [string]$run.Text
-            if ([string]::IsNullOrEmpty($runText)) { continue }
-
-            $runRange = $Document.Range($cursor.End, $cursor.End)
-            $runRange.Text = $runText
-
-            $inlineRanges += [pscustomobject]@{
-                Range  = $runRange
-                Bold   = [bool]$run.Bold
-                Italic = [bool]$run.Italic
+                $cursor.SetRange($hyperlink.Range.End, $hyperlink.Range.End)
+            }
+            catch {
+                $linkRange = $Document.Range($cursor.End, $cursor.End)
+                $linkRange.Text = $label
+                $cursor.SetRange($linkRange.End, $linkRange.End)
             }
 
-            $cursor.SetRange($runRange.End, $runRange.End)
+            continue
+        }
+
+        if ($segment.Type -eq 'internal') {
+            $targetId = [string]$segment.TargetId
+            $label = [string]$segment.Text
+            $bookmark = Resolve-InternalLinkBookmark -TargetId $targetId -InternalLinkMap $InternalLinkMap
+
+            if ([string]::IsNullOrWhiteSpace($bookmark)) {
+                Write-DebugLog "INTERNAL-LINK-NOT-FOUND id=[$targetId]"
+                $plainRange = $Document.Range($cursor.End, $cursor.End)
+                $plainRange.Text = $label
+                $cursor.SetRange($plainRange.End, $plainRange.End)
+                continue
+            }
+
+            try {
+                $linkRange = $Document.Range($cursor.End, $cursor.End)
+
+                $hyperlink = $Document.Hyperlinks.Add(
+                    $linkRange,
+                    '',
+                    $bookmark,
+                    '',
+                    $label
+                )
+
+                $cursor.SetRange($hyperlink.Range.End, $hyperlink.Range.End)
+            }
+            catch {
+                Write-DebugLog "INTERNAL-LINK-ADD-FAILED id=[$targetId] bookmark=[$bookmark] error=[$($_.Exception.Message)]"
+                $plainRange = $Document.Range($cursor.End, $cursor.End)
+                $plainRange.Text = $label
+                $cursor.SetRange($plainRange.End, $plainRange.End)
+            }
+
+            continue
         }
     }
 
@@ -733,7 +891,8 @@ function Set-TableCellTextWithHyperlinks {
         $Document,
         $Cell,
         [string]$Text,
-        $StyleConfig
+        $StyleConfig,
+        [hashtable]$InternalLinkMap
     )
 
     $Text = $Text -replace "\\n", "`r"
@@ -743,53 +902,80 @@ function Set-TableCellTextWithHyperlinks {
     $cellTextRange.Text = ''
 
     $cursor = $Document.Range($cellTextRange.Start, $cellTextRange.Start)
-    $linkPattern = '(https?://[^\s\[]+)(?:\[([^\]]+)\])?'
+    $segments = Parse-InlineLinkSegments -Text $Text
 
-    $matches = [regex]::Matches($Text, $linkPattern)
-    $pos = 0
-
-    foreach ($m in $matches) {
-        if ($m.Index -gt $pos) {
-            $beforeText = $Text.Substring($pos, $m.Index - $pos)
-            $r = $Document.Range($cursor.End, $cursor.End)
-            $r.Text = $beforeText
-            $cursor.SetRange($r.End, $r.End)
+    foreach ($segment in $segments) {
+        if ($segment.Type -eq 'text') {
+            $plain = [string]$segment.Text
+            if (-not [string]::IsNullOrEmpty($plain)) {
+                $r = $Document.Range($cursor.End, $cursor.End)
+                $r.Text = $plain
+                $cursor.SetRange($r.End, $r.End)
+            }
+            continue
         }
 
-        $url = [string]$m.Groups[1].Value
-        $label = $url
+        if ($segment.Type -eq 'external') {
+            $url = [string]$segment.Url
+            $label = [string]$segment.Text
 
-        if ($m.Groups.Count -ge 3 -and $m.Groups[2].Success -and
-            -not [string]::IsNullOrWhiteSpace($m.Groups[2].Value)) {
-            $label = [string]$m.Groups[2].Value
+            try {
+                $linkRange = $Document.Range($cursor.End, $cursor.End)
+
+                $hyperlink = $Document.Hyperlinks.Add(
+                    $linkRange,
+                    $url,
+                    '',
+                    '',
+                    $label
+                )
+
+                $cursor.SetRange($hyperlink.Range.End, $hyperlink.Range.End)
+            }
+            catch {
+                $r = $Document.Range($cursor.End, $cursor.End)
+                $r.Text = $label
+                $cursor.SetRange($r.End, $r.End)
+            }
+
+            continue
         }
 
-        try {
-            $linkRange = $Document.Range($cursor.End, $cursor.End)
+        if ($segment.Type -eq 'internal') {
+            $targetId = [string]$segment.TargetId
+            $label = [string]$segment.Text
+            $bookmark = Resolve-InternalLinkBookmark -TargetId $targetId -InternalLinkMap $InternalLinkMap
 
-            $hyperlink = $Document.Hyperlinks.Add(
-                $linkRange,
-                $url,
-                '',
-                '',
-                $label
-            )
+            if ([string]::IsNullOrWhiteSpace($bookmark)) {
+                Write-DebugLog "INTERNAL-LINK-NOT-FOUND id=[$targetId]"
+                $r = $Document.Range($cursor.End, $cursor.End)
+                $r.Text = $label
+                $cursor.SetRange($r.End, $r.End)
+                continue
+            }
 
-            $cursor.SetRange($hyperlink.Range.End, $hyperlink.Range.End)
+            try {
+                $linkRange = $Document.Range($cursor.End, $cursor.End)
+
+                $hyperlink = $Document.Hyperlinks.Add(
+                    $linkRange,
+                    '',
+                    $bookmark,
+                    '',
+                    $label
+                )
+
+                $cursor.SetRange($hyperlink.Range.End, $hyperlink.Range.End)
+            }
+            catch {
+                Write-DebugLog "INTERNAL-LINK-ADD-FAILED id=[$targetId] bookmark=[$bookmark] error=[$($_.Exception.Message)]"
+                $r = $Document.Range($cursor.End, $cursor.End)
+                $r.Text = $label
+                $cursor.SetRange($r.End, $r.End)
+            }
+
+            continue
         }
-        catch {
-            $r = $Document.Range($cursor.End, $cursor.End)
-            $r.Text = $label
-            $cursor.SetRange($r.End, $r.End)
-        }
-
-        $pos = $m.Index + $m.Length
-    }
-
-    if ($pos -lt $Text.Length) {
-        $afterText = $Text.Substring($pos)
-        $r = $Document.Range($cursor.End, $cursor.End)
-        $r.Text = $afterText
     }
 
     $cellRange = $Cell.Range
@@ -1327,11 +1513,12 @@ function Add-WordTable {
         [int]$ColumnCount,
         $Config,
         [string]$Caption,
-        $Attributes
+        $Attributes,
+        [hashtable]$InternalLinkMap
     )
 
     if ($Caption) {
-        $captionParagraph = Append-TextParagraph -Document $Document -Text $Caption -StyleConfig $Config.Styles.FigureCaption
+        $captionParagraph = Append-TextParagraph -Document $Document -Text $Caption -StyleConfig $Config.Styles.FigureCaption -InternalLinkMap $InternalLinkMap
         try {
             $captionParagraph.Range.ParagraphFormat.KeepWithNext = $true
         }
@@ -1340,7 +1527,7 @@ function Add-WordTable {
     # Write-Host "Add-WordTable Caption:$($Caption)"
 
     if (-not $Rows -or $Rows.Count -eq 0) {
-        Append-TextParagraph -Document $Document -Text '[空テーブル]' -StyleConfig $Config.Styles.Body | Out-Null
+        Append-TextParagraph -Document $Document -Text '[空テーブル]' -StyleConfig $Config.Styles.Body -InternalLinkMap $InternalLinkMap | Out-Null
         return
     }
 
@@ -1447,7 +1634,8 @@ function Add-WordTable {
                 -Document $Document `
                 -Cell $cellRange `
                 -Text $text `
-                -StyleConfig $style
+                -StyleConfig $style `
+                -InternalLinkMap $InternalLinkMap
             if ($autoNumber -and $c -eq 0) {
                 try {
                     $cellRange.ParagraphFormat.Alignment = 2 # 右寄せ
@@ -2347,6 +2535,26 @@ function Parse-AsciiDocFile {
             continue
         }
 
+        if ($trimmed -match '^\[\[([^\]]+)\]\]$') {
+            Flush-ParagraphBuffer
+            $anchorId = [string]$matches[1]
+            if (-not [string]::IsNullOrWhiteSpace($anchorId)) {
+                $elements.Add((New-Element -Type 'anchor' -Data @{ Id = $anchorId.Trim() }))
+            }
+            $lineIndex++
+            continue
+        }
+
+        if ($trimmed -match '^\[#([^\]]+)\]$') {
+            Flush-ParagraphBuffer
+            $anchorId = [string]$matches[1]
+            if (-not [string]::IsNullOrWhiteSpace($anchorId)) {
+                $elements.Add((New-Element -Type 'anchor' -Data @{ Id = $anchorId.Trim() }))
+            }
+            $lineIndex++
+            continue
+        }
+
         if ($trimmed -match '^\.(\S.*)$' -and -not $trimmed.StartsWith('..')) {
             $captionText = $matches[1]
             $nextTrimmed = Get-NextNonEmptyTrimmedLine -Lines $lines -StartIndex ($lineIndex + 1)
@@ -2647,6 +2855,7 @@ function Add-ListParagraph {
         [int]$Level,
         [int]$ElementLevel,
         $StyleConfig,
+        [hashtable]$InternalLinkMap,
         [switch]$Numbered,
         [int]$ListIndex = 1,
         [int]$ParentIndex = 1
@@ -2684,7 +2893,8 @@ function Add-ListParagraph {
     Append-TextParagraph `
         -Document $Document `
         -Text ($prefix + $Text) `
-        -StyleConfig $style | Out-Null
+        -StyleConfig $style `
+        -InternalLinkMap $InternalLinkMap | Out-Null
 }
 
 function Build-WordDocument {
@@ -2787,9 +2997,30 @@ function Build-WordDocument {
         $hasTitlePage = $false
         $tocInserted = $false
         $insideListContinuation = $false
+        $pendingAnchorBookmark = $null
+
+        $internalLinkMap = @{}
+        $bookmarkNames = @{}
+        foreach ($e in $Parsed.Elements) {
+            if ($e.Type -ne 'anchor') { continue }
+
+            $anchorId = [string]$e.Id
+            if ([string]::IsNullOrWhiteSpace($anchorId)) { continue }
+            if ($internalLinkMap.ContainsKey($anchorId)) { continue }
+
+            $internalLinkMap[$anchorId] = Convert-AnchorIdToBookmarkName -AnchorId $anchorId -UsedNames $bookmarkNames
+        }
         
         foreach ($element in $Parsed.Elements) {
-            if (-not $tocInserted -and $hasTitlePage -and $element.Type -ne 'title') {
+            if ($element.Type -eq 'anchor') {
+                $anchorId = [string]$element.Id
+                if (-not [string]::IsNullOrWhiteSpace($anchorId) -and $internalLinkMap.ContainsKey($anchorId)) {
+                    $pendingAnchorBookmark = [string]$internalLinkMap[$anchorId]
+                }
+                continue
+            }
+
+            if (-not $tocInserted -and $hasTitlePage -and $element.Type -notin @('title', 'anchor')) {
                 Add-SectionBreakToDocument -Document $document
                 $justAfterPageBreak = $true
 
@@ -2818,6 +3049,13 @@ function Build-WordDocument {
             if ($resetList) {
                 $listCounters = @(0, 0, 0, 0, 0, 0)
                 $currentListLevel = 0
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($pendingAnchorBookmark)) {
+                $anchorRange = $document.Content
+                $anchorRange.Collapse((Get-WordConstant 'wdCollapseEnd'))
+                [void](Add-WordBookmarkSafe -Document $document -Range $anchorRange -BookmarkName $pendingAnchorBookmark)
+                $pendingAnchorBookmark = $null
             }
 
             switch ($element.Type) {
@@ -2924,7 +3162,8 @@ function Build-WordDocument {
                     Append-TextParagraph `
                         -Document $document `
                         -Text $text `
-                        -StyleConfig $style | Out-Null
+                        -StyleConfig $style `
+                        -InternalLinkMap $internalLinkMap | Out-Null
                 }
                 'bullet' {
                     $level = [int]$element.Level
@@ -2937,7 +3176,8 @@ function Build-WordDocument {
                         -Text $element.Text `
                         -Level $level `
                         -ElementLevel $element.MarkerCount `
-                        -StyleConfig $Config.Styles.Bullet
+                        -StyleConfig $Config.Styles.Bullet `
+                        -InternalLinkMap $internalLinkMap
                 }
                 'numbered' {
                     $level = [int]$element.Level
@@ -2961,6 +3201,7 @@ function Build-WordDocument {
                         -Level $level `
                         -ElementLevel $element.MarkerCount `
                         -StyleConfig $Config.Styles.Numbered `
+                        -InternalLinkMap $internalLinkMap `
                         -Numbered `
                         -ParentIndex $parentNo `
                         -ListIndex $currentNo
@@ -2972,7 +3213,8 @@ function Build-WordDocument {
                     $range = Append-TextParagraph `
                         -Document $document `
                         -Text $formattedText `
-                        -StyleConfig $Config.Styles.Admonition
+                        -StyleConfig $Config.Styles.Admonition `
+                        -InternalLinkMap $internalLinkMap
 
                     # 種類別 背景色
                     $colorHex = $Config.Styles.Admonition.Colors.$($element.Kind)
@@ -2994,7 +3236,8 @@ function Build-WordDocument {
                         Append-TextParagraph `
                             -Document $document `
                             -Text $element.Caption `
-                            -StyleConfig $Config.Styles.CodeCaption | Out-Null
+                            -StyleConfig $Config.Styles.CodeCaption `
+                            -InternalLinkMap $internalLinkMap | Out-Null
                     }
 
                     if (($insideListContinuation -or $currentListLevel -gt 0) -and $currentListLevel -gt 0) {
@@ -3015,7 +3258,8 @@ function Build-WordDocument {
                         Append-TextParagraph `
                             -Document $document `
                             -Text $codeLine `
-                            -StyleConfig $style | Out-Null
+                            -StyleConfig $style `
+                            -InternalLinkMap $internalLinkMap | Out-Null
                     }
 
                     Append-BlankParagraph -Document $document
@@ -3031,7 +3275,7 @@ function Build-WordDocument {
                 'table' { 
                     Write-DebugLog "BUILD-TABLE caption=[$($element.Caption)] rows=$($element.tableInfo.Rows.Count)"
                     
-                    Add-WordTable -Document $document -Rows $element.tableInfo.Rows -ColumnCount $element.tableInfo.MaxColumns  -Config $Config -Caption $element.Caption -Attributes $element.Attributes 
+                    Add-WordTable -Document $document -Rows $element.tableInfo.Rows -ColumnCount $element.tableInfo.MaxColumns  -Config $Config -Caption $element.Caption -Attributes $element.Attributes -InternalLinkMap $internalLinkMap
                 }
                 'continuation' {
                     $insideListContinuation = $true
@@ -3040,10 +3284,11 @@ function Build-WordDocument {
                     Append-TextParagraph `
                         -Document $document `
                         -Text $element.Text `
-                        -StyleConfig $Config.Styles.TableCaption | Out-Null
+                        -StyleConfig $Config.Styles.TableCaption `
+                        -InternalLinkMap $internalLinkMap | Out-Null
                 }                
                 default { 
-                    Append-TextParagraph -Document $document -Text ('[未対応要素: ' + $element.Type + ']') -StyleConfig $Config.Styles.Body | Out-Null 
+                    Append-TextParagraph -Document $document -Text ('[未対応要素: ' + $element.Type + ']') -StyleConfig $Config.Styles.Body -InternalLinkMap $internalLinkMap | Out-Null 
                 }
             }
             # if ($element.Type -ne 'pagebreak') { 
@@ -3118,14 +3363,14 @@ function Build-WordDocument {
         $word.Quit()
     }
     finally {
-        if ($document -ne $null) {
+        if ($null -ne $document) {
             try { 
                 $document.Close() | Out-Null
                 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($document) | Out-Null 
             }
             catch {}
         }
-        if ($word -ne $null) {
+        if ($null -ne $word) {
             try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch {}
         }
         [GC]::Collect()
@@ -3136,6 +3381,23 @@ function Build-WordDocument {
 try {
     $inputFullPath = Get-AbsolutePath -Path $AdocFullPath
     $configFullPath = Get-AbsolutePath -Path $ConfigFullPath
+
+    if (-not (Test-Path -LiteralPath $inputFullPath -PathType Leaf)) {
+        $searchRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+        $candidates = @(Get-ChildItem -LiteralPath $searchRoot -Filter '*.adoc' -File -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object FullName |
+            Select-Object -First 10 -ExpandProperty FullName)
+
+        $candidateText = if ($candidates.Count -gt 0) {
+            [Environment]::NewLine + '候補:' + [Environment]::NewLine + ($candidates -join [Environment]::NewLine)
+        }
+        else {
+            ''
+        }
+
+        throw "入力ファイルが見つかりません: $inputFullPath$candidateText"
+    }
+
     $config = Load-JsonConfig -Path $configFullPath
 
     $visited = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
