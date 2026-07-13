@@ -544,7 +544,7 @@ Alice -> Bob : Hello
 
 == 制限事項
 
-[cols="3,7",options="header,autonumber"]
+[cols="1,3,7",options="header,autonumber"]
 |===
 |No
 |項目

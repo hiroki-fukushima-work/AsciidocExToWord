@@ -1,9 +1,16 @@
 ﻿[CmdletBinding()]
 
 param(
-    [string]$AdocFullPath  = ".\AsciiDocSample.adoc",
-    [string]$OutputFullPath = ".\out\AsciiDocSample.docx",
-    [string]$ConfigFullPath = ".\conf\word-style.sample.json"
+    # [string]$AdocFullPath  = ".\AsciiDocSample.adoc",
+    # [string]$OutputFullPath = ".\out\AsciiDocSample.docx",
+    # [string]$ConfigFullPath = ".\conf\word-style.sample.json",
+    # [string]$TemplateFullPath = ".\Template\cover-template.docx"
+
+    [string]$AdocFullPath = "C:\workspace\査証\見積\システム構成\構成検討.adoc",
+    [string]$OutputFullPath = "C:\workspace\査証\見積\システム構成\out\構成検討.docx",
+    [string]$ConfigFullPath = ".\conf\word-style.sample.json",
+    [string]$TemplateFullPath = ".\Template\cover-template.docx"
+
 )
 
 $script:DebugLogPath = Join-Path $PSScriptRoot 'convert-debug.log'
@@ -16,7 +23,7 @@ function Write-DebugLog {
 
 # 初期化
 $context = @{
-    Type = $null          # 'number' / 'bullet' / 'text'
+    Type        = $null          # 'number' / 'bullet' / 'text'
     BulletLevel = 0
 }
 
@@ -32,7 +39,7 @@ function Set-HangingIndent {
     $pf.LeftIndent = $IndentWidth
 
     # 1行目だけ左へ戻す（ぶら下げ）
-    $pf.FirstLineIndent = -$IndentWidth
+    $pf.FirstLineIndent = - $IndentWidth
 }
 
 function Resolve-PathFromScript {
@@ -56,7 +63,8 @@ function Resolve-PathFromScript {
 
 $baseDir = if ($PSScriptRoot) {
     $PSScriptRoot
-} else {
+}
+else {
     Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
@@ -93,7 +101,7 @@ function Remove-WrappingQuotes {
     $result = ([string]$Value).Trim()
     while ($result.Length -ge 2) {
         $first = $result.Substring(0, 1)
-        $last  = $result.Substring($result.Length - 1, 1)
+        $last = $result.Substring($result.Length - 1, 1)
         $isDoubleQuoted = ($first -eq '"' -and $last -eq '"')
         $isSingleQuoted = ($first -eq "'" -and $last -eq "'")
         if (-not ($isDoubleQuoted -or $isSingleQuoted)) {
@@ -169,7 +177,7 @@ function Load-JsonConfig {
     param([string]$Path)
 
     if (-not (Test-Path $Path)) {
-    	$message = "設定ファイルが見つかりません: $($Path)"
+        $message = "設定ファイルが見つかりません: $($Path)"
         throw $message
     }
 
@@ -244,24 +252,24 @@ function Get-WordConstant {
     param([string]$Name)
 
     $map = @{
-        wdCollapseEnd = 0
-        wdPageBreak = 7
-        wdHeaderFooterPrimary = 1
-        wdAlignParagraphLeft = 0
-        wdAlignParagraphCenter = 1
-        wdAlignParagraphRight = 2
-        wdAutoFitContent = 1
-        wdCellAlignVerticalCenter = 1
-        wdLineStyleNone = 0
-        wdListApplyToWholeList = 0
-        wdColorAutomatic = -16777216
-        wdSaveFormatDocumentDefault = 16
-        wdWord9ListBehavior = 1
-        msoShapeRoundedRectangle = 5
-        msoTextOrientationHorizontal = 1
-        wdSectionBreakNextPage = 2
-        wdFieldPage = 33
-        wdFieldSectionPages = 87
+        wdCollapseEnd                    = 0
+        wdPageBreak                      = 7
+        wdHeaderFooterPrimary            = 1
+        wdAlignParagraphLeft             = 0
+        wdAlignParagraphCenter           = 1
+        wdAlignParagraphRight            = 2
+        wdAutoFitContent                 = 1
+        wdCellAlignVerticalCenter        = 1
+        wdLineStyleNone                  = 0
+        wdListApplyToWholeList           = 0
+        wdColorAutomatic                 = -16777216
+        wdSaveFormatDocumentDefault      = 16
+        wdWord9ListBehavior              = 1
+        msoShapeRoundedRectangle         = 5
+        msoTextOrientationHorizontal     = 1
+        wdSectionBreakNextPage           = 2
+        wdFieldPage                      = 33
+        wdFieldSectionPages              = 87
         wdVerticalPositionRelativeToPage = 3
     }
 
@@ -308,9 +316,9 @@ function Apply-FontStyle {
 
     if ($StyleConfig.PSObject.Properties.Name -contains 'Alignment' -and $StyleConfig.Alignment) {
         switch (([string]$StyleConfig.Alignment).ToLowerInvariant()) {
-            'left'   { $Range.ParagraphFormat.Alignment = Get-WordConstant 'wdAlignParagraphLeft' }
+            'left' { $Range.ParagraphFormat.Alignment = Get-WordConstant 'wdAlignParagraphLeft' }
             'center' { $Range.ParagraphFormat.Alignment = Get-WordConstant 'wdAlignParagraphCenter' }
-            'right'  { $Range.ParagraphFormat.Alignment = Get-WordConstant 'wdAlignParagraphRight' }
+            'right' { $Range.ParagraphFormat.Alignment = Get-WordConstant 'wdAlignParagraphRight' }
         }
     }
 
@@ -349,9 +357,9 @@ function Apply-ParagraphStyle {
     try {
         if ($StyleConfig.PSObject.Properties.Name -contains 'Alignment' -and $StyleConfig.Alignment) {
             switch ([string]$StyleConfig.Alignment) {
-                'Left'    { $Range.ParagraphFormat.Alignment = 0 }
-                'Center'  { $Range.ParagraphFormat.Alignment = 1 }
-                'Right'   { $Range.ParagraphFormat.Alignment = 2 }
+                'Left' { $Range.ParagraphFormat.Alignment = 0 }
+                'Center' { $Range.ParagraphFormat.Alignment = 1 }
+                'Right' { $Range.ParagraphFormat.Alignment = 2 }
                 'Justify' { $Range.ParagraphFormat.Alignment = 3 }
             }
         }
@@ -389,7 +397,7 @@ function Apply-ParagraphStyle {
 
             # Exactly（固定行間）
             $Range.ParagraphFormat.LineSpacingRule = 2   # wdLineSpaceExactly
-            $Range.ParagraphFormat.LineSpacing     = [float]$StyleConfig.LineSpacing
+            $Range.ParagraphFormat.LineSpacing = [float]$StyleConfig.LineSpacing
         }
     }
     catch {
@@ -399,13 +407,15 @@ function Apply-ParagraphStyle {
         # 段落前後の余白（省略時は 0）
         if ($StyleConfig.PSObject.Properties.Name -contains 'SpaceBefore') {
             $Range.ParagraphFormat.SpaceBefore = [float]$StyleConfig.SpaceBefore
-        } else {
+        }
+        else {
             $Range.ParagraphFormat.SpaceBefore = 0
         }
 
         if ($StyleConfig.PSObject.Properties.Name -contains 'SpaceAfter') {
             $Range.ParagraphFormat.SpaceAfter = [float]$StyleConfig.SpaceAfter
-        } else {
+        }
+        else {
             $Range.ParagraphFormat.SpaceAfter = 0
         }
     }
@@ -422,11 +432,11 @@ function Format-AdmonitionText {
 
     switch ($Kind) {
         'IMPORTANT' { return "$($LabelConfig.Important) $Text" }
-        'WARNING'   { return "$($LabelConfig.Warning) $Text" }
-        'CAUTION'   { return "$($LabelConfig.Caution) $Text" }
-        'NOTE'      { return "$($LabelConfig.Note) $Text" }
-        'TIP'       { return "$($LabelConfig.Tip) $Text" }
-        default     { return "[$Kind] $Text" }
+        'WARNING' { return "$($LabelConfig.Warning) $Text" }
+        'CAUTION' { return "$($LabelConfig.Caution) $Text" }
+        'NOTE' { return "$($LabelConfig.Note) $Text" }
+        'TIP' { return "$($LabelConfig.Tip) $Text" }
+        default { return "[$Kind] $Text" }
     }
 }
 function Parse-InlineText {
@@ -493,14 +503,14 @@ function Convert-InlineEmphasis {
     $runs = New-Object System.Collections.Generic.List[object]
 
     $patterns = @(
-        @{ Open = '**__'; Close = '__**'; Bold = $true;  Italic = $true;  NeedBoundary = $false },
-        @{ Open = '__**'; Close = '**__'; Bold = $true;  Italic = $true;  NeedBoundary = $false },
-        @{ Open = '*_';   Close = '_*';   Bold = $true;  Italic = $true;  NeedBoundary = $true  },
-        @{ Open = '_*';   Close = '*_';   Bold = $true;  Italic = $true;  NeedBoundary = $true  },
-        @{ Open = '**';   Close = '**';   Bold = $true;  Italic = $false; NeedBoundary = $false },
-        @{ Open = '__';   Close = '__';   Bold = $false; Italic = $true;  NeedBoundary = $false },
-        @{ Open = '*';    Close = '*';    Bold = $true;  Italic = $false; NeedBoundary = $true  },
-        @{ Open = '_';    Close = '_';    Bold = $false; Italic = $true;  NeedBoundary = $true  }
+        @{ Open = '**__'; Close = '__**'; Bold = $true; Italic = $true; NeedBoundary = $false },
+        @{ Open = '__**'; Close = '**__'; Bold = $true; Italic = $true; NeedBoundary = $false },
+        @{ Open = '*_'; Close = '_*'; Bold = $true; Italic = $true; NeedBoundary = $true },
+        @{ Open = '_*'; Close = '*_'; Bold = $true; Italic = $true; NeedBoundary = $true },
+        @{ Open = '**'; Close = '**'; Bold = $true; Italic = $false; NeedBoundary = $false },
+        @{ Open = '__'; Close = '__'; Bold = $false; Italic = $true; NeedBoundary = $false },
+        @{ Open = '*'; Close = '*'; Bold = $true; Italic = $false; NeedBoundary = $true },
+        @{ Open = '_'; Close = '_'; Bold = $false; Italic = $true; NeedBoundary = $true }
     )
 
     function Add-Run {
@@ -513,10 +523,10 @@ function Convert-InlineEmphasis {
         if ([string]::IsNullOrEmpty($Value)) { return }
 
         $runs.Add([pscustomobject]@{
-            Text   = $Value
-            Bold   = $Bold
-            Italic = $Italic
-        })
+                Text   = $Value
+                Bold   = $Bold
+                Italic = $Italic
+            })
     }
 
     $plain = New-Object System.Text.StringBuilder
@@ -550,7 +560,7 @@ function Convert-InlineEmphasis {
             }
 
             $matched = @{
-                Pattern = $p
+                Pattern    = $p
                 CloseIndex = $closeIndex
             }
             break
@@ -798,12 +808,12 @@ function Edit-CoverPage {
     )
 
     $replaceMap = @{
-        '%%タイトル%%'     = [string]$Metadata.Title
+        '%%タイトル%%'   = [string]$Metadata.Title
         '%%サブタイトル%%' = [string]$Metadata.Subtitle
-        '%%版数%%'         = [string]$Metadata.RevNumber
-        '%%改定日%%'       = [string]$Metadata.RevDate
-        '%%作成者%%'       = [string]$Metadata.Author
-        '%%著作権%%'       = [string]$Metadata.Copyright
+        '%%版数%%'     = [string]$Metadata.RevNumber
+        '%%改定日%%'    = [string]$Metadata.RevDate
+        '%%作成者%%'    = [string]$Metadata.Author
+        '%%著作権%%'    = [string]$Metadata.Copyright
     }
 
     $ranges = @()
@@ -872,16 +882,16 @@ function Add-CoverPage {
     )
 
     $app = $Document.Application
-    $pageWidth  = $Document.PageSetup.PageWidth
+    $pageWidth = $Document.PageSetup.PageWidth
     $pageHeight = $Document.PageSetup.PageHeight
     $leftMargin = $Document.PageSetup.LeftMargin
     $rightMargin = $Document.PageSetup.RightMargin
 
     # タイトル用 角丸テキストボックス
-    $boxWidth  = $app.MillimetersToPoints(140)
+    $boxWidth = $app.MillimetersToPoints(140)
     $boxHeight = $app.MillimetersToPoints(45)
-    $boxLeft   = ($pageWidth - $boxWidth) / 2
-    $boxTop    = $app.MillimetersToPoints(90)
+    $boxLeft = ($pageWidth - $boxWidth) / 2
+    $boxTop = $app.MillimetersToPoints(90)
 
     $titleBox = $Document.Shapes.AddShape(
         5,          # msoShapeRoundedRectangle
@@ -896,11 +906,11 @@ function Add-CoverPage {
     # 作成者情報をタイトル枠の右下に配置
     if ($Metadata.Author) {
 
-        $authorWidth  = $app.MillimetersToPoints(70)
+        $authorWidth = $app.MillimetersToPoints(70)
         $authorHeight = $app.MillimetersToPoints(25)
 
         $authorLeft = $boxLeft + $boxWidth - $authorWidth
-        $authorTop  = $boxTop + $boxHeight + $app.MillimetersToPoints(5)
+        $authorTop = $boxTop + $boxHeight + $app.MillimetersToPoints(5)
 
         $authorBox = $Document.Shapes.AddTextbox(
             1,
@@ -913,10 +923,10 @@ function Add-CoverPage {
         $authorBox.Line.Visible = $false
         $authorBox.Fill.Visible = $false
 
-        $authorBox.TextFrame.MarginTop    = 0
+        $authorBox.TextFrame.MarginTop = 0
         $authorBox.TextFrame.MarginBottom = 0
-        $authorBox.TextFrame.MarginLeft   = 0
-        $authorBox.TextFrame.MarginRight  = 0
+        $authorBox.TextFrame.MarginLeft = 0
+        $authorBox.TextFrame.MarginRight = 0
 
         $authorRange = $authorBox.TextFrame.TextRange
         $authorRange.Text = $Metadata.Author
@@ -944,11 +954,11 @@ function Add-CoverPage {
     $subLine.Font.Underline = 0
 
     # 右下情報ボックス
-    $infoWidth  = $app.MillimetersToPoints(70)
+    $infoWidth = $app.MillimetersToPoints(70)
     $infoHeight = $app.MillimetersToPoints(25)
 
     $infoLeft = $pageWidth - $rightMargin - $infoWidth
-    $infoTop  = $pageHeight - $app.MillimetersToPoints(55)
+    $infoTop = $pageHeight - $app.MillimetersToPoints(55)
 
     $infoBox = $Document.Shapes.AddTextbox(
         1,
@@ -963,10 +973,10 @@ function Add-CoverPage {
     $infoBox.Fill.Visible = $false
 
     # 内部余白少し削る
-    $infoBox.TextFrame.MarginTop    = 0
+    $infoBox.TextFrame.MarginTop = 0
     $infoBox.TextFrame.MarginBottom = 0
-    $infoBox.TextFrame.MarginLeft   = 0
-    $infoBox.TextFrame.MarginRight  = 0
+    $infoBox.TextFrame.MarginLeft = 0
+    $infoBox.TextFrame.MarginRight = 0
 
     $r = $infoBox.TextFrame.TextRange
     $r.Text = ""
@@ -974,37 +984,47 @@ function Add-CoverPage {
     # テーブル追加
     $tbl = $Document.Tables.Add($r, 2, 2)
 
-    # 罫線なし
+    # 罫線
+    $wdBorderLeft = 1
+    $wdBorderTop = 2
+    $wdBorderBottom = 4
+    $wdBorderRight = 3
+    
     $tbl.Borders.Enable = 0
+    
+    $tbl.Borders.Item($wdBorderLeft).LineStyle = 1
+    $tbl.Borders.Item($wdBorderTop).LineStyle = 1
+    $tbl.Borders.Item($wdBorderBottom).LineStyle = 1
+    $tbl.Borders.Item($wdBorderRight).LineStyle = 1
 
     # 列幅調整
     $tbl.Columns.Item(1).Width = $app.MillimetersToPoints(18)
     $tbl.Columns.Item(2).Width = $app.MillimetersToPoints(40)
 
     # 値設定
-    $tbl.Cell(1,1).Range.Text = "版数"
-    $tbl.Cell(1,2).Range.Text = $Metadata.RevNumber
+    $tbl.Cell(1, 1).Range.Text = "版数"
+    $tbl.Cell(1, 2).Range.Text = $Metadata.RevNumber
 
-    $tbl.Cell(2,1).Range.Text = "改定日"
-    $tbl.Cell(2,2).Range.Text = $Metadata.RevDate
+    $tbl.Cell(2, 1).Range.Text = "改定日"
+    $tbl.Cell(2, 2).Range.Text = $Metadata.RevDate
 
     # スタイル適用
     for ($row = 1; $row -le 2; $row++) {
 
         Apply-FontStyle `
-            -Range $tbl.Cell($row,1).Range `
+            -Range $tbl.Cell($row, 1).Range `
             -StyleConfig $Config.Styles.Owner
 
         Apply-ParagraphStyle `
-            -Range $tbl.Cell($row,1).Range `
+            -Range $tbl.Cell($row, 1).Range `
             -StyleConfig $Config.Styles.Owner
 
         Apply-FontStyle `
-            -Range $tbl.Cell($row,2).Range `
+            -Range $tbl.Cell($row, 2).Range `
             -StyleConfig $Config.Styles.Revision
 
         Apply-ParagraphStyle `
-            -Range $tbl.Cell($row,2).Range `
+            -Range $tbl.Cell($row, 2).Range `
             -StyleConfig $Config.Styles.Revision
     }
 }
@@ -1211,7 +1231,7 @@ function Convert-TableRows {
             return
         }
 
-        $Rows.Value += ,$CurrentRow.Value
+        $Rows.Value += , $CurrentRow.Value
 
         if ($CurrentCols.Value -gt $MaxColumns.Value) {
             $MaxColumns.Value = $CurrentCols.Value
@@ -1314,8 +1334,10 @@ function Add-WordTable {
         $captionParagraph = Append-TextParagraph -Document $Document -Text $Caption -StyleConfig $Config.Styles.FigureCaption
         try {
             $captionParagraph.Range.ParagraphFormat.KeepWithNext = $true
-        } catch {}
+        }
+        catch {}
     }
+    # Write-Host "Add-WordTable Caption:$($Caption)"
 
     if (-not $Rows -or $Rows.Count -eq 0) {
         Append-TextParagraph -Document $Document -Text '[空テーブル]' -StyleConfig $Config.Styles.Body | Out-Null
@@ -1372,7 +1394,8 @@ function Add-WordTable {
 
             try {
                 $cellRange = $table.Cell($r + 1, $c + 1)
-            } catch { continue }
+            }
+            catch { continue }
 
             $cell = $grid[$key]
             $text = [string]$cell.Text
@@ -1415,7 +1438,8 @@ function Add-WordTable {
 
             $style = if ($isHeaderCell) {
                 $Config.Styles.TableHeader
-            } else {
+            }
+            else {
                 $Config.Styles.TableBody
             }
 
@@ -1429,15 +1453,16 @@ function Add-WordTable {
                     $cellRange.ParagraphFormat.Alignment = 2 # 右寄せ
                     $cellRange.ParagraphFormat.WordWrap = $false
                     $cellRange.ParagraphFormat.Hyphenation = 0
-                } catch {}
+                }
+                catch {}
             }
         }
     }
 
 
     try {
-        $pageWidth   = $Document.PageSetup.PageWidth
-        $leftMargin  = $Document.PageSetup.LeftMargin
+        $pageWidth = $Document.PageSetup.PageWidth
+        $leftMargin = $Document.PageSetup.LeftMargin
         $rightMargin = $Document.PageSetup.RightMargin
 
         $range = $Document.Content
@@ -1451,7 +1476,7 @@ function Add-WordTable {
         $table.AutoFitBehavior(0)
 
         $table.PreferredWidthType = 3
-        $table.PreferredWidth     = $availableWidth
+        $table.PreferredWidth = $availableWidth
 
         # ---- cols属性
         if ($Attributes -and $Attributes.ContainsKey('cols')) {
@@ -1498,7 +1523,7 @@ function Add-WordTable {
         $ratios = $colDefs | ForEach-Object { $_.Ratio }
 
         if ($autoNumber) {
-            $remainRatios = $ratios[1..($ratios.Count -  1)]
+            $remainRatios = $ratios[1..($ratios.Count - 1)]
             $availableWidth -= $Config.Styles.Table.NumberWidth
         }
         else {
@@ -1521,7 +1546,23 @@ function Add-WordTable {
                     # remainRatiosを使わない理由は ループのインデックスはNumber列も含んでいる為
                     # remainRatiosは列を除いた比率を計算するために使っているだけ
                 }
-                $table.Columns.Item($i).Width = [float]$width
+                #Write-Host "i:($i) Widht:$($width)"
+                #$table.Columns.Item($i).Width = [float]$width
+
+                # テーブルを追加してすぐにWidthを設定するとエラーになるのでリトライを入れる
+                for ($retry = 0; $retry -lt 5; $retry++) {
+                    try {
+                        $table.Columns.Item($i).Width = [float]$width
+                        break
+                    }
+                    catch {
+                        Start-Sleep -Milliseconds 1000
+                        if ($retry -eq 4) { 
+                            throw 
+                        }
+                    }
+                }
+
             }
         }
         else {
@@ -1550,7 +1591,8 @@ function Add-WordTable {
             try {
                 $cellRange = $table.Cell($r + 1, $c + 1)
                 $cellRange.Merge($table.Cell($r + $cell.RowSpan, $c + $cell.ColSpan))
-            } catch {}
+            }
+            catch {}
         }
     }
 
@@ -1559,8 +1601,8 @@ function Add-WordTable {
 
 function Get-ImageFullPath {
     param(
-        [Parameter(Mandatory=$true)][string]$ImageReference,
-        [Parameter(Mandatory=$true)][string]$CurrentFileDirectory,
+        [Parameter(Mandatory = $true)][string]$ImageReference,
+        [Parameter(Mandatory = $true)][string]$CurrentFileDirectory,
         [hashtable]$Attributes
     )
 
@@ -1584,8 +1626,8 @@ function Get-ImageFullPath {
 
 function Add-ImageToDocument {
     param(
-        [Parameter(Mandatory=$true)]$Document,
-        [Parameter(Mandatory=$true)][string]$ImagePath,
+        [Parameter(Mandatory = $true)]$Document,
+        [Parameter(Mandatory = $true)][string]$ImagePath,
         [string]$Caption,
         $Config
     )
@@ -1604,7 +1646,8 @@ function Add-ImageToDocument {
 
         try {
             $captionRange.ParagraphFormat.KeepWithNext = $true
-        } catch {}
+        }
+        catch {}
     }
 
     # -----------------------------
@@ -1673,7 +1716,8 @@ function Add-ImageToDocument {
                         $shape.Height = $shape.Height * $ratio
                     }
 
-                } else {
+                }
+                else {
                     # --- どうしようもない → 改ページ ---
                     $shape.Delete()
 
@@ -1689,7 +1733,8 @@ function Add-ImageToDocument {
                     $shape = $Document.InlineShapes.AddPicture($ImagePath, $false, $true, $range)
                 }
             }
-        } catch {}
+        }
+        catch {}
     }
     else {
         $text = "【画像が見つかりません】:$ImagePath"
@@ -1730,12 +1775,12 @@ function Set-HeaderFooter {
     if ($Config.HeaderFooter.Footer -and $Config.HeaderFooter.Footer.Text) { $footerText = [string]$Config.HeaderFooter.Footer.Text }
 
     $replacements = @{
-        '{title}'      = [string]($Metadata.Title)
-        '{subtitle}'   = [string]($Metadata.Subtitle)
-        '{author}'     = [string]($Metadata.Author)
-        '{revnumber}'  = [string]($Metadata.RevNumber)
-        '{revdate}'    = [string]($Metadata.RevDate)
-        '{copyright}'  = [string]($Metadata.Copyright)
+        '{title}'     = [string]($Metadata.Title)
+        '{subtitle}'  = [string]($Metadata.Subtitle)
+        '{author}'    = [string]($Metadata.Author)
+        '{revnumber}' = [string]($Metadata.RevNumber)
+        '{revdate}'   = [string]($Metadata.RevDate)
+        '{copyright}' = [string]($Metadata.Copyright)
     }
 
     foreach ($key in $replacements.Keys) {
@@ -1837,10 +1882,10 @@ function Invoke-PlantUmlRender {
     )
 
     $result = @{
-        Success = $false
-        ImagePath = $null
+        Success      = $false
+        ImagePath    = $null
         ErrorMessage = $null
-        Format = $null
+        Format       = $null
     }
 
     if (-not $Config.PlantUml -or -not [bool]$Config.PlantUml.Enabled) {
@@ -1946,10 +1991,10 @@ function Invoke-DrawIoRender {
     )
 
     $result = @{
-        Success = $false
-        ImagePath = $null
+        Success      = $false
+        ImagePath    = $null
         ErrorMessage = $null
-        Format = $null
+        Format       = $null
     }
 
     if (-not $Config.DrawIo -or -not [bool]$Config.DrawIo.Enabled) {
@@ -1980,7 +2025,7 @@ function Invoke-DrawIoRender {
     elseif ($Config.DrawIo.DefaultFormat) {
         $format = [string]$Config.DrawIo.DefaultFormat
     }
-    $svgTheme='light'
+    $svgTheme = 'light'
 
     $format = $format.ToLowerInvariant()
     $result.Format = $format
@@ -2077,8 +2122,8 @@ function Parse-AsciiDocFile {
     $absolutePath = Get-AbsolutePath -Path $Path
     if ($Visited.Contains($absolutePath)) {
         return [pscustomobject]@{
-            Metadata = @{}
-            Elements = @()
+            Metadata   = @{}
+            Elements   = @()
             Attributes = $Attributes
         }
     }
@@ -2094,11 +2139,11 @@ function Parse-AsciiDocFile {
 
     $elements = New-Object System.Collections.Generic.List[object]
     $metadata = @{
-        Title = $null
-        Subtitle = $null
-        Author = $null
+        Title     = $null
+        Subtitle  = $null
+        Author    = $null
         RevNumber = $null
-        RevDate = $null
+        RevDate   = $null
         Copyright = $null
         ImagesDir = $null
     }
@@ -2167,16 +2212,16 @@ function Parse-AsciiDocFile {
                         $fallback = "[PlantUML 画像生成失敗] $($render.ErrorMessage)"
                         $elements.Add((New-Element -Type 'admonition' -Data @{ Kind = 'WARNING'; Text = $fallback }))
                         $elements.Add((New-Element -Type 'code' -Data @{
-                            Text = $blockText
-                            Caption = $pendingCaption
-                        }))
+                                    Text    = $blockText
+                                    Caption = $pendingCaption
+                                }))
                     }
                 }
                 else {
                     $elements.Add((New-Element -Type 'code' -Data @{
-                        Text = $blockText
-                        Caption = $pendingCaption
-                    }))
+                                Text    = $blockText
+                                Caption = $pendingCaption
+                            }))
                 }
 
                 $fenceLines.Clear()
@@ -2233,7 +2278,7 @@ function Parse-AsciiDocFile {
             }
             $Attributes[$attrName] = $attrValue
             switch ($attrName) {
-                'title' {$metadata.Title = Normalize-InlineText -Text $attrValue -Attributes $Attributes }
+                'title' { $metadata.Title = Normalize-InlineText -Text $attrValue -Attributes $Attributes }
                 'subtitle' { $metadata.Subtitle = Normalize-InlineText -Text $attrValue -Attributes $Attributes }
                 'author' { $metadata.Author = $attrValue }
                 'revnumber' { $metadata.RevNumber = $attrValue }
@@ -2281,7 +2326,7 @@ function Parse-AsciiDocFile {
             Flush-ParagraphBuffer
             $metadata.Title = Normalize-InlineText -Text $matches[1] -Attributes $Attributes
             if (-not $metadata.Subtitle) {
-                 $metadata.Subtitle = $null
+                $metadata.Subtitle = $null
             }
             if ($matches[2]) { 
                 $metadata.Subtitle = Normalize-InlineText -Text $matches[2] -Attributes $Attributes 
@@ -2333,15 +2378,15 @@ function Parse-AsciiDocFile {
             $inside = $matches[1]
             
 
-        if ($trimmed -match '^(NOTE|TIP|IMPORTANT|WARNING|CAUTION):\s+(.+)$') {
-            Flush-ParagraphBuffer
-            $elements.Add((New-Element -Type 'admonition' -Data @{
-                Kind = $matches[1]
-                Text = (Normalize-InlineText -Text $matches[2] -Attributes $Attributes)
-            }))
-            $lineIndex++
-            continue
-        }
+            if ($trimmed -match '^(NOTE|TIP|IMPORTANT|WARNING|CAUTION):\s+(.+)$') {
+                Flush-ParagraphBuffer
+                $elements.Add((New-Element -Type 'admonition' -Data @{
+                            Kind = $matches[1]
+                            Text = (Normalize-InlineText -Text $matches[2] -Attributes $Attributes)
+                        }))
+                $lineIndex++
+                continue
+            }
 
             $attrList = Parse-AsciiDocAttributeList -Text $inside
             if ($attrList.Values -contains 'plantuml' -or $inside -match '^plantuml(?:,|$)') {
@@ -2366,16 +2411,16 @@ function Parse-AsciiDocFile {
 
                 if ($render.Success) {
                     $elements.Add((New-Element -Type 'image' -Data @{
-                        Path = $render.ImagePath
-                        Caption = $caption
-                        GeneratedBy = 'drawio'
-                    }))
+                                Path        = $render.ImagePath
+                                Caption     = $caption
+                                GeneratedBy = 'drawio'
+                            }))
                 }
                 else {
                     $elements.Add((New-Element -Type 'admonition' -Data @{
-                        Kind = 'WARNING'
-                        Text = "[draw.io 画像生成失敗] $($render.ErrorMessage)"
-                    }))
+                                Kind = 'WARNING'
+                                Text = "[draw.io 画像生成失敗] $($render.ErrorMessage)"
+                            }))
                 }
 
                 $pendingCaption = $null
@@ -2436,7 +2481,7 @@ function Parse-AsciiDocFile {
                 if ($tTrim -match '^\|={3,}$') { break }
                 # 空行は捨てる
                 #if ($tTrim) {
-                    $tableLines.Add($tLine)
+                $tableLines.Add($tLine)
                 #}
                 $lineIndex++
             }
@@ -2445,17 +2490,17 @@ function Parse-AsciiDocFile {
 
             if (-not [string]::IsNullOrWhiteSpace($pendingCaption)) {
                 $elements.Add((New-Element -Type 'tablecaption' -Data @{
-                    Text = $pendingCaption
-                }))
+                            Text = $pendingCaption
+                        }))
             }
 
             Write-DebugLog "TABLE-ADD rows=$($tableInfo.Rows.Count) cols=$($tableInfo.MaxColumns) caption=[$pendingCaption]"
 
             $elements.Add((New-Element -Type 'table' -Data @{
-                tableInfo  = $tableInfo
-                Caption    = $null
-                Attributes = $pendingBlockAttributes
-            }))
+                        tableInfo  = $tableInfo
+                        Caption    = $null
+                        Attributes = $pendingBlockAttributes
+                    }))
 
             $pendingCaption = $null
             $pendingBlockAttributes = $null
@@ -2477,7 +2522,7 @@ function Parse-AsciiDocFile {
             Flush-ParagraphBuffer
             $indentLength = ([regex]::Match($line, '^\s*')).Value.Length
             $level = [Math]::Max(1, [int][Math]::Floor($indentLength / 2) + 1)
-           $elements.Add((New-Element -Type 'numbered' -Data @{ Text = (Normalize-InlineText -Text $matches[2] -Attributes $Attributes); Level = $level; MarkerCount = $matches[1].Length }))
+            $elements.Add((New-Element -Type 'numbered' -Data @{ Text = (Normalize-InlineText -Text $matches[2] -Attributes $Attributes); Level = $level; MarkerCount = $matches[1].Length }))
             $lineIndex++
             continue
         }
@@ -2519,10 +2564,10 @@ function Parse-AsciiDocFile {
             }
 
             $elements.Add((New-Element -Type 'numbered' -Data @{
-                Text  = $text
-                Level = $dotPrefix
-                MarkerCount = $dotPrefix
-            }))
+                        Text        = $text
+                        Level       = $dotPrefix
+                        MarkerCount = $dotPrefix
+                    }))
 
             continue
         }
@@ -2561,6 +2606,16 @@ function Parse-AsciiDocFile {
             continue
         }
 
+        # 行解析中
+        if ($trimmed -match '^:sectnums:\s*$') {
+            if (-not $Attributes) {
+                $Attributes = @{}
+            }
+
+            $Attributes['sectnums'] = $true
+            continue
+        }
+
         if ($line.TrimEnd().EndsWith('+')) {
             # 行末の + を除去
             $withoutPlus = $line.TrimEnd()
@@ -2579,8 +2634,8 @@ function Parse-AsciiDocFile {
     Flush-ParagraphBuffer
 
     return [pscustomobject]@{
-        Metadata = $metadata
-        Elements = $elements
+        Metadata   = $metadata
+        Elements   = $elements
         Attributes = $Attributes
     }
 }
@@ -2640,15 +2695,15 @@ function Build-WordDocument {
     )
 
     $justAfterPageBreak = $false
-    $lastElementType   = $null
-    $lastHeadingLevel  = 0
+    $lastElementType = $null
+    $lastHeadingLevel = 0
     $currentListLevel = 0
     
     # 番号付き箇条書きの番号
-    $listCounters = @(0,0,0,0,0,0)
+    $listCounters = @(0, 0, 0, 0, 0, 0)
 
     # 章番号
-    $headingCounters = @(0,0,0,0,0,0)
+    $headingCounters = @(0, 0, 0, 0, 0, 0)
     $isFirstHeading = $true
 
     $word = $null
@@ -2659,14 +2714,13 @@ function Build-WordDocument {
         $adocDir = Split-Path -Parent $inputFullPath
 
         $metadata = [pscustomobject]@{
-            Title = [string]($Parsed.Metadata.Title)
-            Subtitle = [string]($Parsed.Metadata.Subtitle)
-            Author = [string]($Parsed.Metadata.Author)
+            Title     = [string]($Parsed.Metadata.Title)
+            Subtitle  = [string]($Parsed.Metadata.Subtitle)
+            Author    = [string]($Parsed.Metadata.Author)
             RevNumber = [string]($Parsed.Metadata.RevNumber)
-            RevDate = [string]($Parsed.Metadata.RevDate)
+            RevDate   = [string]($Parsed.Metadata.RevDate)
             Copyright = [string]($Parsed.Metadata.Copyright)
         }
-
 
         $absoluteOutput = Get-AbsolutePath -Path $OutputFullPath
         $outputDir = Split-Path -Parent $absoluteOutput
@@ -2674,13 +2728,24 @@ function Build-WordDocument {
             [void](New-Item -ItemType Directory -Path $outputDir -Force)
         }
         
-        if (Test-Path $Config.CoverPage.TemplatePath) {
+        $templatePath = ""
+        if (Test-Path $TemplateFullPath) {
+            $templatePath = $TemplateFullPath
+        }
+        else {
+            $templatePath = $Config.CoverPage.TemplatePath
+        }
+
+        if (Test-Path $templatePath) {
             #
             # 表紙テンプレートをベース文書として開く
             #
+            # $templatePath = Get-AbsolutePath `
+            #     -Path $templatePath `
+            #     -BaseDirectory $adocDir
             $templatePath = Get-AbsolutePath `
-                -Path $Config.CoverPage.TemplatePath `
-                -BaseDirectory $adocDir
+                -Path $templatePath 
+            
             $document = $word.Documents.Open($templatePath, $false, $true)
             $document.SaveAs($absoluteOutput)
 
@@ -2740,18 +2805,18 @@ function Build-WordDocument {
 
             switch ($element.Type) {
 
-                'heading'    { $resetList = $true }
+                'heading' { $resetList = $true }
                 #'pagebreak'  { $resetList = $true }
-                'title'      { $resetList = $true }
+                'title' { $resetList = $true }
                 #'admonition' { $resetList = $true }
                 #'table'      { $resetList = $true }
                 #'image'      { $resetList = $true }
 
-                default      { $resetList = $false }
+                default { $resetList = $false }
             }
 
             if ($resetList) {
-                $listCounters = @(0,0,0,0,0,0)
+                $listCounters = @(0, 0, 0, 0, 0, 0)
                 $currentListLevel = 0
             }
 
@@ -2812,7 +2877,12 @@ function Build-WordDocument {
                         }
                     }
 
-                    $headingText = (($nums -join '.') + ' ' + $element.Text).Trim()
+                    if ($Parsed.Attributes.ContainsKey('sectnums') -and $nums.Count -gt 0) {
+                        $headingText = ($nums -join '.') + ' ' + $element.Text.Trim()
+                    }
+                    else {
+                        $headingText = $element.Text.Trim()
+                    }
 
                     $styleName = 'Heading' + [string]$level
                     $styleConfig = $Config.Styles.$styleName
@@ -2910,8 +2980,9 @@ function Build-WordDocument {
                         try {
                             $wordColor = Convert-RgbToWordColor $colorHex
                             $range.Paragraphs(1).Shading.BackgroundPatternColor =
-                                [int]("0x00$wordColor")
-                        } catch {
+                            [int]("0x00$wordColor")
+                        }
+                        catch {
                             # 失敗しても致命的ではないので握りつぶし
                         }
                     }
@@ -2990,7 +3061,7 @@ function Build-WordDocument {
                     # lastElementTypeは変更しない
                 }
 
-                { $_ -in @('paragraph','bullet','numbered','image','table','admonition','tablecaption') } {
+                { $_ -in @('paragraph', 'bullet', 'numbered', 'image', 'table', 'admonition', 'tablecaption') } {
                     $lastElementType = 'paragraph'
                     $justAfterPageBreak = $false
                 }
@@ -3051,7 +3122,8 @@ function Build-WordDocument {
             try { 
                 $document.Close() | Out-Null
                 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($document) | Out-Null 
-            } catch {}
+            }
+            catch {}
         }
         if ($word -ne $null) {
             try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null } catch {}
