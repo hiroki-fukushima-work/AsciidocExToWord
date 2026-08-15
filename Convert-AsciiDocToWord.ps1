@@ -1,11 +1,11 @@
 ﻿[CmdletBinding()]
 
 param(
-    [string]$AdocFullPath = ".\AsciiDocSample.adoc",
-    [string]$OutputFullPath = ".\out\AsciiDocSample.docx",
+    [string]$AdocFullPath,
+    [string]$OutputFullPath,
     [string]$ConfigFullPath = ".\conf\word-style.sample.json",
-    [string]$TemplateFullPath = ".\Template\cover-template.docx"
-
+    [string]$TemplateFullPath = ".\Template\cover-template.docx",
+    [switch]$Overwrite
 )
 
 $script:DebugLogPath = Join-Path $PSScriptRoot 'convert-debug.log'
@@ -63,8 +63,50 @@ else {
     Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
+# デバッグ用: 動作確認時にフルパスを設定する（通常は空文字のまま）
+$DebugAdocFullPath = ""
+
+# インプットチェック
+
+if (-not [string]::IsNullOrWhiteSpace($DebugAdocFullPath)) {
+    $AdocFullPath = $DebugAdocFullPath
+}
+
+if ([string]::IsNullOrWhiteSpace($AdocFullPath)) {
+    Add-Type -AssemblyName System.Windows.Forms
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Filter = 'AsciiDoc/Markdown files (*.adoc;*.md;*.markdown)|*.adoc;*.md;*.markdown|All files (*.*)|*.*'
+    $dialog.Title = '変換元ファイルを選択してください'
+    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $AdocFullPath = $dialog.FileName
+    }
+    else {
+        Write-Output 'ファイルが選択されませんでした。処理を中止します。'
+        exit 0
+    }
+}
+
 $AdocFullPath = Resolve-PathFromScript -Path $AdocFullPath -BaseDir $baseDir
-$OutputFullPath = Resolve-PathFromScript -Path $OutputFullPath -BaseDir $baseDir
+
+if ([string]::IsNullOrWhiteSpace($OutputFullPath)) {
+    $baseOutput = [System.IO.Path]::ChangeExtension($AdocFullPath, '.docx')
+    if (-not (Test-Path -LiteralPath $baseOutput)) {
+        $OutputFullPath = $baseOutput
+    }
+    else {
+        $counter = 1
+        do {
+            $outDir = [System.IO.Path]::GetDirectoryName($baseOutput)
+            $outName = [System.IO.Path]::GetFileNameWithoutExtension($baseOutput)
+            $OutputFullPath = Join-Path $outDir ($outName + '_' + $counter + '.docx')
+            $counter++
+        } while (Test-Path -LiteralPath $OutputFullPath)
+    }
+}
+else {
+    $OutputFullPath = Resolve-PathFromScript -Path $OutputFullPath -BaseDir $baseDir
+}
+
 $ConfigFullPath = Resolve-PathFromScript -Path $ConfigFullPath -BaseDir $baseDir
 
 Set-StrictMode -Version Latest
@@ -1699,7 +1741,7 @@ function Add-WordTable {
             }
         }
         else {
-            $colDefs = @(for ($i = 0; $i -lt $ColumnCount; $ii++) { 11 }) | ForEach-Object {
+            $colDefs = @(for ($i = 0; $i -lt $ColumnCount; $i++) { 11 }) | ForEach-Object {
                 [PSCustomObject]@{
                     Ratio      = $_
                     Align      = $null
@@ -3378,6 +3420,422 @@ function Build-WordDocument {
     }
 }
 
+function Normalize-MarkdownInlineText {
+    param(
+        [string]$Text,
+        [hashtable]$Attributes
+    )
+
+    if ($null -eq $Text) { return '' }
+
+    $value = $Text
+
+    if ($Attributes) {
+        foreach ($k in $Attributes.Keys) {
+            $token = '{' + $k + '}'
+            $value = $value.Replace($token, [string]$Attributes[$k])
+        }
+    }
+
+    # 画像リンク ![alt](path) → テキスト表記
+    $value = [regex]::Replace($value, '!\[([^\]]*)\]\([^\)]+\)', '[画像: $1]')
+
+    # Markdown リンク [label](url) → link:url[label] (Parse-InlineLinkSegments 互換)
+    $value = [regex]::Replace($value, '\[([^\]]+)\]\(([^\)]+)\)', 'link:$2[$1]')
+
+    # *italic* (単一アスタリスク) → _italic_
+    $value = [regex]::Replace($value, '(?<!\*)\*(?!\*)([^*\n]+?)(?<!\*)\*(?!\*)', '_$1_')
+
+    # インラインコードのバッククォートを除去
+    $value = [regex]::Replace($value, '`([^`]+)`', '$1')
+
+    # 打消し線を除去
+    $value = [regex]::Replace($value, '~~([^~]+)~~', '$1')
+
+    return $value.TrimEnd()
+}
+
+function Parse-MarkdownFile {
+    param(
+        [string]$Path,
+        [hashtable]$Attributes,
+        [System.Collections.Generic.HashSet[string]]$Visited,
+        $Config
+    )
+
+    $absolutePath = Get-AbsolutePath -Path $Path
+    if ($Visited.Contains($absolutePath)) {
+        return [pscustomobject]@{
+            Metadata   = @{}
+            Elements   = @()
+            Attributes = $Attributes
+        }
+    }
+    [void]$Visited.Add($absolutePath)
+
+    $fileDir = Split-Path -Parent $absolutePath
+    $rawText = Get-Content -LiteralPath $absolutePath -Encoding UTF8 -Raw
+    if ($null -eq $rawText) { $rawText = '' }
+    $rawText = $rawText -replace "`r`n", "`n"
+    $rawText = $rawText -replace "`r", "`n"
+    $lines = @($rawText -split "`n")
+
+    $elements = New-Object System.Collections.Generic.List[object]
+    $metadata = @{
+        Title     = $null
+        Subtitle  = $null
+        Author    = $null
+        RevNumber = $null
+        RevDate   = $null
+        Copyright = $null
+        ImagesDir = $null
+    }
+
+    $lineIndex = 0
+    $paragraphBuffer = New-Object System.Collections.Generic.List[string]
+
+    function Flush-MdParagraph {
+        if ($paragraphBuffer.Count -eq 0) { return }
+        $joined = ($paragraphBuffer | ForEach-Object { ([string]$_).Trim() }) -join ' '
+        $normalized = Normalize-MarkdownInlineText -Text $joined -Attributes $Attributes
+        if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+            $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = $normalized }))
+        }
+        $paragraphBuffer.Clear()
+    }
+
+    # YAML フロントマター解析
+    if ($lines.Count -gt 0 -and ([string]$lines[0]).Trim() -eq '---') {
+        $lineIndex = 1
+        while ($lineIndex -lt $lines.Count) {
+            $fmLine = [string]$lines[$lineIndex]
+            $fmTrimmed = $fmLine.Trim()
+            if ($fmTrimmed -eq '---' -or $fmTrimmed -eq '...') {
+                $lineIndex++
+                break
+            }
+            if ($fmLine -match '^(\w[\w-]*):\s*(.*)$') {
+                $key = $matches[1].ToLowerInvariant()
+                $val = $matches[2].Trim().Trim('"').Trim("'")
+                $Attributes[$key] = $val
+                switch ($key) {
+                    'title' { $metadata.Title = $val }
+                    'subtitle' { $metadata.Subtitle = $val }
+                    'author' { $metadata.Author = $val }
+                    'revnumber' { $metadata.RevNumber = $val }
+                    'revdate' { $metadata.RevDate = $val }
+                    'date' { if (-not $metadata.RevDate) { $metadata.RevDate = $val } }
+                    'copyright' { $metadata.Copyright = $val }
+                }
+            }
+            $lineIndex++
+        }
+    }
+
+    $inFence = $false
+    $fenceChar = $null
+    $fenceLines = New-Object System.Collections.Generic.List[string]
+    $pendingCaption = $null
+    $pendingMdTableOptions = $null
+
+    while ($lineIndex -lt $lines.Count) {
+        $line = [string]$lines[$lineIndex]
+        $trimmed = $line.Trim()
+
+        # フェンスコードブロック内
+        if ($inFence) {
+            if ($trimmed -match "^$([regex]::Escape($fenceChar)){3,}\s*$") {
+                $blockText = ($fenceLines -join "`n")
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = $blockText
+                            Caption = $pendingCaption
+                        }))
+                $pendingCaption = $null
+                $fenceLines.Clear()
+                $inFence = $false
+                $fenceChar = $null
+            }
+            else {
+                $fenceLines.Add($line)
+            }
+            $lineIndex++
+            continue
+        }
+
+        # 空行
+        if ([string]::IsNullOrWhiteSpace($trimmed)) {
+            Flush-MdParagraph
+            $lineIndex++
+            continue
+        }
+
+        # ATX 見出し: # H1 ～ ###### H6
+        if ($trimmed -match '^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$') {
+            Flush-MdParagraph
+            $level = $matches[1].Length
+            $headingText = Normalize-MarkdownInlineText -Text $matches[2].Trim() -Attributes $Attributes
+            if ($level -eq 1 -and -not $metadata.Title) {
+                $metadata.Title = $headingText
+                $elements.Add((New-Element -Type 'title' -Data @{ Text = $headingText; Subtitle = $metadata.Subtitle }))
+            }
+            else {
+                $elements.Add((New-Element -Type 'heading' -Data @{ Level = $level; Text = $headingText }))
+            }
+            $lineIndex++
+            continue
+        }
+
+        # Setext 見出し (次行が === または --- の場合)
+        if ($lineIndex + 1 -lt $lines.Count) {
+            $nextLine = [string]$lines[$lineIndex + 1]
+            if ($nextLine -match '^=+\s*$' -and -not [string]::IsNullOrWhiteSpace($trimmed)) {
+                Flush-MdParagraph
+                $headingText = Normalize-MarkdownInlineText -Text $trimmed -Attributes $Attributes
+                if (-not $metadata.Title) {
+                    $metadata.Title = $headingText
+                    $elements.Add((New-Element -Type 'title' -Data @{ Text = $headingText; Subtitle = $null }))
+                }
+                else {
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 1; Text = $headingText }))
+                }
+                $lineIndex += 2
+                continue
+            }
+            if ($nextLine -match '^-+\s*$' -and
+                -not [string]::IsNullOrWhiteSpace($trimmed) -and
+                $trimmed -notmatch '^[-*_\s]+$') {
+                Flush-MdParagraph
+                $headingText = Normalize-MarkdownInlineText -Text $trimmed -Attributes $Attributes
+                $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = $headingText }))
+                $lineIndex += 2
+                continue
+            }
+        }
+
+        # フェンスコードブロック開始
+        if ($trimmed -match '^(`{3,}|~{3,})') {
+            Flush-MdParagraph
+            $fenceChar = $matches[1].Substring(0, 1)
+            $inFence = $true
+            $fenceLines.Clear()
+            $lineIndex++
+            continue
+        }
+
+        # 水平線 (→ 改ページ扱い)
+        if ($trimmed -match '^(-{3,}|\*{3,}|_{3,})\s*$') {
+            Flush-MdParagraph
+            $elements.Add((New-Element -Type 'pagebreak' -Data @{}))
+            $lineIndex++
+            continue
+        }
+
+        # テーブル属性コメント: <!-- options: autonumber -->
+        if ($trimmed -match '^<!--\s*options:\s*(.+?)\s*-->$') {
+            Flush-MdParagraph
+            $pendingMdTableOptions = $matches[1].Trim()
+            $lineIndex++
+            continue
+        }
+
+        # テーブル
+        if ($trimmed -match '^\|') {
+            Flush-MdParagraph
+            $mdTableLines = New-Object System.Collections.Generic.List[string]
+            $mdSepColCount = 0
+            while ($lineIndex -lt $lines.Count) {
+                $tLine = [string]$lines[$lineIndex]
+                $tTrim = $tLine.Trim()
+                if (-not ($tTrim -match '^\|')) { break }
+                # セパレータ行: 列数を取得してスキップ
+                if ([string]::IsNullOrEmpty(($tTrim -replace '[|\-: ]', ''))) {
+                    $sepCols = ([regex]::Matches($tTrim, '\|')).Count - 1
+                    if ($sepCols -gt $mdSepColCount) { $mdSepColCount = $sepCols }
+                    $lineIndex++
+                    continue
+                }
+                $mdTableLines.Add($tTrim)
+                $lineIndex++
+            }
+
+            if ($mdTableLines.Count -gt 0) {
+                $mdRows = @()
+                $colCount = $mdSepColCount
+                $occupied = @{}
+                $rowIndex = 0
+                $isFirstRow = $true
+
+                foreach ($tl in $mdTableLines) {
+                    $cellTexts = @()
+                    foreach ($cm in [regex]::Matches($tl, '\|([^|]*)')) {
+                        $cellTexts += $cm.Groups[1].Value.Trim()
+                    }
+                    # 末尾の空セル (trailing |) を除去
+                    while ($cellTexts.Count -gt 0 -and $cellTexts[-1] -eq '') {
+                        $cellTexts = $cellTexts[0..($cellTexts.Count - 2)]
+                    }
+
+                    $cells = @()
+                    $physCol = 0
+                    $ctIndex = 0
+
+                    while ($ctIndex -lt $cellTexts.Count) {
+                        # rowspan で occupied なカラムと対応するプレースホルダーをスキップ
+                        while ($occupied["$rowIndex,$physCol"]) {
+                            $physCol++
+                            if ($ctIndex -lt $cellTexts.Count) { $ctIndex++ }
+                        }
+                        if ($ctIndex -ge $cellTexts.Count) { break }
+
+                        $ct = $cellTexts[$ctIndex]
+                        $rowSpan = 1
+                        $colSpan = 1
+                        $cellText = $ct
+
+                        # スパン指定解析: 2.3+text → rowspan=2,colspan=3
+                        if ($ct -match '^(\d+)\.(\d+)\+(.*)$') {
+                            $rowSpan = [int]$matches[1]
+                            $colSpan = [int]$matches[2]
+                            $cellText = $matches[3].Trim()
+                        }
+                        # rowspan のみ: 2.text (ドット直後が非数字)
+                        elseif ($ct -match '^(\d+)\.([^\d].*)$' -or $ct -match '^(\d+)\.$') {
+                            $rowSpan = [int]$matches[1]
+                            $cellText = if ($ct -match '^(\d+)\.(.*)$') { $matches[2].Trim() } else { '' }
+                        }
+                        # colspan のみ: 2+text
+                        elseif ($ct -match '^(\d+)\+(.*)$') {
+                            $colSpan = [int]$matches[1]
+                            $cellText = $matches[2].Trim()
+                        }
+
+                        $cells += @{
+                            Text     = (Normalize-MarkdownInlineText -Text $cellText -Attributes $Attributes)
+                            RowSpan  = $rowSpan
+                            ColSpan  = $colSpan
+                            IsHeader = $isFirstRow
+                        }
+
+                        # rowspan による後続行の occupied をマーク
+                        for ($rr = 1; $rr -lt $rowSpan; $rr++) {
+                            for ($cc = 0; $cc -lt $colSpan; $cc++) {
+                                $occupied["$($rowIndex+$rr),$($physCol+$cc)"] = $true
+                            }
+                        }
+
+                        $physCol += $colSpan
+                        $ctIndex += $colSpan  # colspan 分のプレースホルダーをスキップ
+                    }
+
+                    # 有効列数を span を考慮して計算
+                    $effectiveCols = 0
+                    foreach ($c in $cells) { $effectiveCols += [int]$c.ColSpan }
+                    if ($effectiveCols -gt $colCount) { $colCount = $effectiveCols }
+                    $mdRows += , $cells
+                    $isFirstRow = $false
+                    $rowIndex++
+                }
+
+                if ($mdRows.Count -gt 0 -and $colCount -gt 0) {
+                    $tableAttributes = @{}
+                    if (-not [string]::IsNullOrWhiteSpace($pendingMdTableOptions)) {
+                        $tableAttributes['options'] = $pendingMdTableOptions
+                    }
+                    $tableInfo = [pscustomobject]@{
+                        Rows       = $mdRows
+                        MaxColumns = $colCount
+                    }
+                    $elements.Add((New-Element -Type 'table' -Data @{
+                                tableInfo  = $tableInfo
+                                Caption    = $pendingCaption
+                                Attributes = $tableAttributes
+                            }))
+                    $pendingCaption = $null
+                    $pendingMdTableOptions = $null
+                }
+            }
+            continue
+        }
+
+        # 引用ブロック (→ NOTE アドモニション)
+        if ($trimmed -match '^>\s*(.*)$') {
+            Flush-MdParagraph
+            $quoteLines = New-Object System.Collections.Generic.List[string]
+            $quoteLines.Add([string]$matches[1])
+            while ($lineIndex + 1 -lt $lines.Count) {
+                $nextLine = [string]$lines[$lineIndex + 1]
+                if ($nextLine.Trim() -match '^>\s*(.*)$') {
+                    $quoteLines.Add([string]$matches[1])
+                    $lineIndex++
+                }
+                else { break }
+            }
+            $fullQuote = ($quoteLines | ForEach-Object { ([string]$_).Trim() }) -join ' '
+            $elements.Add((New-Element -Type 'admonition' -Data @{
+                        Kind = 'NOTE'
+                        Text = (Normalize-MarkdownInlineText -Text $fullQuote -Attributes $Attributes)
+                    }))
+            $lineIndex++
+            continue
+        }
+
+        # 箇条書き (unordered: -, *, +)
+        if ($trimmed -match '^[-*+]\s+(.+)$') {
+            Flush-MdParagraph
+            $indentLen = ([regex]::Match($line, '^\s*')).Value.Length
+            $level = [Math]::Max(1, [int][Math]::Floor($indentLen / 2) + 1)
+            $elements.Add((New-Element -Type 'bullet' -Data @{
+                        Text        = (Normalize-MarkdownInlineText -Text $matches[1] -Attributes $Attributes)
+                        Level       = $level
+                        MarkerCount = 1
+                    }))
+            $lineIndex++
+            continue
+        }
+
+        # 番号付きリスト
+        if ($trimmed -match '^\d+\.\s+(.+)$') {
+            Flush-MdParagraph
+            $indentLen = ([regex]::Match($line, '^\s*')).Value.Length
+            $level = [Math]::Max(1, [int][Math]::Floor($indentLen / 2) + 1)
+            $elements.Add((New-Element -Type 'numbered' -Data @{
+                        Text        = (Normalize-MarkdownInlineText -Text $matches[1] -Attributes $Attributes)
+                        Level       = $level
+                        MarkerCount = $level
+                    }))
+            $lineIndex++
+            continue
+        }
+
+        # 単独画像行: ![alt](path)
+        if ($trimmed -match '^!\[([^\]]*)\]\(([^\)]+)\)$') {
+            Flush-MdParagraph
+            $altText = $matches[1]
+            $imgRef = $matches[2].Trim()
+            $imagePath = Get-ImageFullPath -ImageReference $imgRef -CurrentFileDirectory $fileDir -Attributes $Attributes
+            $elements.Add((New-Element -Type 'image' -Data @{
+                        Path    = $imagePath
+                        Caption = if (-not [string]::IsNullOrWhiteSpace($altText)) { $altText } else { $pendingCaption }
+                    }))
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
+        # 通常段落
+        $paragraphBuffer.Add($trimmed)
+        $lineIndex++
+    }
+
+    Flush-MdParagraph
+
+    return [pscustomobject]@{
+        Metadata   = $metadata
+        Elements   = $elements
+        Attributes = $Attributes
+    }
+}
+
 try {
     $inputFullPath = Get-AbsolutePath -Path $AdocFullPath
     $configFullPath = Get-AbsolutePath -Path $ConfigFullPath
@@ -3402,9 +3860,15 @@ try {
 
     $visited = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $attributes = @{}
-    $parsed = Parse-AsciiDocFile -Path $inputFullPath -Attributes $attributes -Visited $visited -Config $config
+    $extension = [System.IO.Path]::GetExtension($inputFullPath).ToLowerInvariant()
+    if ($extension -eq '.md' -or $extension -eq '.markdown') {
+        $parsed = Parse-MarkdownFile -Path $inputFullPath -Attributes $attributes -Visited $visited -Config $config
+    }
+    else {
+        $parsed = Parse-AsciiDocFile -Path $inputFullPath -Attributes $attributes -Visited $visited -Config $config
+    }
     $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
-    Write-Output "$TIMESTAMP AsciiDocのパースに成功しました"
+    Write-Output "$TIMESTAMP ファイルのパースに成功しました"
 
     Build-WordDocument -Parsed $parsed -Config $config -OutputFullPath $OutputFullPath
     $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
