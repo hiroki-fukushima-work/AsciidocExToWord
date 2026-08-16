@@ -1,11 +1,12 @@
 ﻿[CmdletBinding()]
 
 param(
-    [string]$AdocFullPath,
-    [string]$OutputFullPath,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$AdocFullPath,
+    [string]$OutputDir,
     [string]$ConfigFullPath = ".\conf\word-style.sample.json",
     [string]$TemplateFullPath = ".\Template\cover-template.docx",
-    [switch]$Overwrite
+    [switch]$Overwrite = $true
 )
 
 $script:DebugLogPath = Join-Path $PSScriptRoot 'convert-debug.log'
@@ -69,16 +70,17 @@ $DebugAdocFullPath = ""
 # インプットチェック
 
 if (-not [string]::IsNullOrWhiteSpace($DebugAdocFullPath)) {
-    $AdocFullPath = $DebugAdocFullPath
+    $AdocFullPath = @($DebugAdocFullPath)
 }
 
-if ([string]::IsNullOrWhiteSpace($AdocFullPath)) {
+if (-not $AdocFullPath -or $AdocFullPath.Count -eq 0) {
     Add-Type -AssemblyName System.Windows.Forms
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Filter = 'AsciiDoc/Markdown files (*.adoc;*.md;*.markdown)|*.adoc;*.md;*.markdown|All files (*.*)|*.*'
-    $dialog.Title = '変換元ファイルを選択してください'
+    $dialog.Title = '変換元ファイルを選択してください（複数選択可）'
+    $dialog.Multiselect = $true
     if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $AdocFullPath = $dialog.FileName
+        $AdocFullPath = $dialog.FileNames
     }
     else {
         Write-Output 'ファイルが選択されませんでした。処理を中止します。'
@@ -86,25 +88,8 @@ if ([string]::IsNullOrWhiteSpace($AdocFullPath)) {
     }
 }
 
-$AdocFullPath = Resolve-PathFromScript -Path $AdocFullPath -BaseDir $baseDir
-
-if ([string]::IsNullOrWhiteSpace($OutputFullPath)) {
-    $baseOutput = [System.IO.Path]::ChangeExtension($AdocFullPath, '.docx')
-    if (-not (Test-Path -LiteralPath $baseOutput)) {
-        $OutputFullPath = $baseOutput
-    }
-    else {
-        $counter = 1
-        do {
-            $outDir = [System.IO.Path]::GetDirectoryName($baseOutput)
-            $outName = [System.IO.Path]::GetFileNameWithoutExtension($baseOutput)
-            $OutputFullPath = Join-Path $outDir ($outName + '_' + $counter + '.docx')
-            $counter++
-        } while (Test-Path -LiteralPath $OutputFullPath)
-    }
-}
-else {
-    $OutputFullPath = Resolve-PathFromScript -Path $OutputFullPath -BaseDir $baseDir
+if (-not [string]::IsNullOrWhiteSpace($OutputDir)) {
+    $OutputDir = Resolve-PathFromScript -Path $OutputDir -BaseDir $baseDir
 }
 
 $ConfigFullPath = Resolve-PathFromScript -Path $ConfigFullPath -BaseDir $baseDir
@@ -3460,7 +3445,8 @@ function Parse-MarkdownFile {
         [string]$Path,
         [hashtable]$Attributes,
         [System.Collections.Generic.HashSet[string]]$Visited,
-        $Config
+        $Config,
+        [int]$LevelOffset = 0
     )
 
     $absolutePath = Get-AbsolutePath -Path $Path
@@ -3570,16 +3556,19 @@ function Parse-MarkdownFile {
         }
 
         # ATX 見出し: # H1 ～ ###### H6
-        if ($trimmed -match '^(#{1,6})\s+(.+?)(?:\s+#+\s*)?$') {
+        if ($trimmed -match '^(#{1,6})\s+(.+)') {
             Flush-MdParagraph
             $level = $matches[1].Length
-            $headingText = Normalize-MarkdownInlineText -Text $matches[2].Trim() -Attributes $Attributes
-            if ($level -eq 1 -and -not $metadata.Title) {
+            # 末尾の  ## を除去してテキストを取得
+            $rawHeadingText = ([string]$matches[2]) -replace '\s+#+\s*$', ''
+            $headingText = Normalize-MarkdownInlineText -Text $rawHeadingText.Trim() -Attributes $Attributes
+            if ($level -eq 1 -and -not $metadata.Title -and $LevelOffset -eq 0) {
                 $metadata.Title = $headingText
                 $elements.Add((New-Element -Type 'title' -Data @{ Text = $headingText; Subtitle = $metadata.Subtitle }))
             }
             else {
-                $elements.Add((New-Element -Type 'heading' -Data @{ Level = $level; Text = $headingText }))
+                # ## → Level=1、### → Level=2 とAsciiDocの==、===に封対応; includeのオフセット適用
+                $elements.Add((New-Element -Type 'heading' -Data @{ Level = [Math]::Max(1, $level - 1 + $LevelOffset); Text = $headingText }))
             }
             $lineIndex++
             continue
@@ -3591,12 +3580,12 @@ function Parse-MarkdownFile {
             if ($nextLine -match '^=+\s*$' -and -not [string]::IsNullOrWhiteSpace($trimmed)) {
                 Flush-MdParagraph
                 $headingText = Normalize-MarkdownInlineText -Text $trimmed -Attributes $Attributes
-                if (-not $metadata.Title) {
+                if ($LevelOffset -eq 0 -and -not $metadata.Title) {
                     $metadata.Title = $headingText
                     $elements.Add((New-Element -Type 'title' -Data @{ Text = $headingText; Subtitle = $null }))
                 }
                 else {
-                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 1; Text = $headingText }))
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = [Math]::Max(1, 0 + $LevelOffset); Text = $headingText }))
                 }
                 $lineIndex += 2
                 continue
@@ -3606,7 +3595,7 @@ function Parse-MarkdownFile {
                 $trimmed -notmatch '^[-*_\s]+$') {
                 Flush-MdParagraph
                 $headingText = Normalize-MarkdownInlineText -Text $trimmed -Attributes $Attributes
-                $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = $headingText }))
+                $elements.Add((New-Element -Type 'heading' -Data @{ Level = [Math]::Max(1, 1 + $LevelOffset); Text = $headingText }))
                 $lineIndex += 2
                 continue
             }
@@ -3626,6 +3615,29 @@ function Parse-MarkdownFile {
         if ($trimmed -match '^(-{3,}|\*{3,}|_{3,})\s*$') {
             Flush-MdParagraph
             $elements.Add((New-Element -Type 'pagebreak' -Data @{}))
+            $lineIndex++
+            continue
+        }
+
+        # Markdown拡張: <!-- include filename --> でファイルをインクルード
+        if ($trimmed -match '^<!--\s*include\s+(.+?)\s*-->$') {
+            Flush-MdParagraph
+            $includedFile = $matches[1].Trim()
+            $resolvedInclude = if ([System.IO.Path]::IsPathRooted($includedFile)) {
+                $includedFile
+            }
+            else {
+                Get-AbsolutePath -Path $includedFile -BaseDirectory $fileDir
+            }
+            if (Test-Path -LiteralPath $resolvedInclude -PathType Leaf) {
+                $childAttrs = @{}
+                foreach ($k in $Attributes.Keys) { $childAttrs[$k] = $Attributes[$k] }
+                $included = Parse-MarkdownFile -Path $resolvedInclude -Attributes $childAttrs -Visited $Visited -Config $Config -LevelOffset ($LevelOffset + 1)
+                foreach ($child in $included.Elements) { $elements.Add($child) }
+            }
+            else {
+                $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = "[include ファイルが見つかりません: $resolvedInclude]" }))
+            }
             $lineIndex++
             continue
         }
@@ -3829,6 +3841,11 @@ function Parse-MarkdownFile {
 
     Flush-MdParagraph
 
+    # タイトルがあるルート文書はセクション番号を自動有効化（AsciiDocの:sectnums:相当）
+    if ($LevelOffset -eq 0 -and $metadata.Title -and -not $Attributes.ContainsKey('sectnums')) {
+        $Attributes['sectnums'] = $true
+    }
+
     return [pscustomobject]@{
         Metadata   = $metadata
         Elements   = $elements
@@ -3837,42 +3854,59 @@ function Parse-MarkdownFile {
 }
 
 try {
-    $inputFullPath = Get-AbsolutePath -Path $AdocFullPath
     $configFullPath = Get-AbsolutePath -Path $ConfigFullPath
-
-    if (-not (Test-Path -LiteralPath $inputFullPath -PathType Leaf)) {
-        $searchRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
-        $candidates = @(Get-ChildItem -LiteralPath $searchRoot -Filter '*.adoc' -File -Recurse -ErrorAction SilentlyContinue |
-            Sort-Object FullName |
-            Select-Object -First 10 -ExpandProperty FullName)
-
-        $candidateText = if ($candidates.Count -gt 0) {
-            [Environment]::NewLine + '候補:' + [Environment]::NewLine + ($candidates -join [Environment]::NewLine)
-        }
-        else {
-            ''
-        }
-
-        throw "入力ファイルが見つかりません: $inputFullPath$candidateText"
-    }
-
     $config = Load-JsonConfig -Path $configFullPath
 
-    $visited = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $attributes = @{}
-    $extension = [System.IO.Path]::GetExtension($inputFullPath).ToLowerInvariant()
-    if ($extension -eq '.md' -or $extension -eq '.markdown') {
-        $parsed = Parse-MarkdownFile -Path $inputFullPath -Attributes $attributes -Visited $visited -Config $config
-    }
-    else {
-        $parsed = Parse-AsciiDocFile -Path $inputFullPath -Attributes $attributes -Visited $visited -Config $config
-    }
-    $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
-    Write-Output "$TIMESTAMP ファイルのパースに成功しました"
+    foreach ($adocPath in $AdocFullPath) {
+        $inputFullPath = Get-AbsolutePath -Path $adocPath
 
-    Build-WordDocument -Parsed $parsed -Config $config -OutputFullPath $OutputFullPath
-    $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
-    Write-Output "$TIMESTAMP 変換が完了しました: $OutputFullPath"
+        if (-not (Test-Path -LiteralPath $inputFullPath -PathType Leaf)) {
+            Write-Output "警告: ファイルが見つかりません: $inputFullPath (スキップ)"
+            continue
+        }
+
+        $sourceDir = Split-Path -Parent $inputFullPath
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($inputFullPath)
+        $targetDir = if ([string]::IsNullOrWhiteSpace($OutputDir)) { $sourceDir } else { $OutputDir }
+
+        if (-not (Test-Path -LiteralPath $targetDir)) {
+            [void](New-Item -ItemType Directory -Path $targetDir -Force)
+        }
+
+        $baseOutput = Join-Path $targetDir ($baseName + '.docx')
+        if (-not (Test-Path -LiteralPath $baseOutput)) {
+            $outputFullPath = $baseOutput
+        }
+        else {
+            $counter = 1
+            do {
+                $outputFullPath = Join-Path $targetDir ($baseName + '_' + $counter + '.docx')
+                $counter++
+            } while (Test-Path -LiteralPath $outputFullPath)
+        }
+
+        try {
+            $visited = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $attributes = @{}
+            $extension = [System.IO.Path]::GetExtension($inputFullPath).ToLowerInvariant()
+            if ($extension -eq '.md' -or $extension -eq '.markdown') {
+                $parsed = Parse-MarkdownFile -Path $inputFullPath -Attributes $attributes -Visited $visited -Config $config
+            }
+            else {
+                $parsed = Parse-AsciiDocFile -Path $inputFullPath -Attributes $attributes -Visited $visited -Config $config
+            }
+            $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
+            Write-Output "$TIMESTAMP パース完了: $inputFullPath"
+
+            Build-WordDocument -Parsed $parsed -Config $config -OutputFullPath $outputFullPath
+            $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
+            Write-Output "$TIMESTAMP 変換完了: $outputFullPath"
+        }
+        catch {
+            Write-Output "エラー [$inputFullPath]: $($_.Exception.Message)"
+            Write-Output "発生箇所: $($_.InvocationInfo.PositionMessage)"
+        }
+    }
 }
 catch {
     $message = if ($_.Exception) { $_.Exception.Message } else { [string]$_ }
