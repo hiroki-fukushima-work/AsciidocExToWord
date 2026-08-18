@@ -1561,6 +1561,40 @@ function Add-WordTable {
     # =========================
     # ① テーブル生成
     # =========================
+
+    # グローバル設定の AutoNumberTables: ソース側で未指定の場合のみ空列を先頭挿入
+    $sourceHasAutoNumber = $Attributes -and $Attributes.ContainsKey('options') -and
+    ([string]$Attributes['options']) -match 'autonumber'
+    $globalAutoNumberColumn = $false   # vertical-header でスキップする列か否かを記録
+    if (-not $sourceHasAutoNumber -and
+        $Config.Document -and
+        $Config.Document.PSObject.Properties.Name -contains 'AutoNumberTables' -and
+        [bool]$Config.Document.AutoNumberTables) {
+
+        # ヘッダー行の検出（Markdown: IsHeader、AsciiDoc: options=header）
+        $detectedHeader = ($Attributes -and $Attributes.ContainsKey('options') -and
+            ([string]$Attributes['options']) -match 'header') -or
+        ($Rows.Count -gt 0 -and $Rows[0].Count -gt 0 -and $Rows[0][0].IsHeader)
+
+        # Attributes に autonumber / header を追加して既存の per-cell ロジックに乗せる
+        if ($null -eq $Attributes) { $Attributes = @{} }
+        $existingOpt = if ($Attributes.ContainsKey('options')) { [string]$Attributes['options'] } else { '' }
+        $newOpt = if ([string]::IsNullOrWhiteSpace($existingOpt)) { 'autonumber' } else { $existingOpt + ',autonumber' }
+        if ($detectedHeader -and $newOpt -notmatch 'header') { $newOpt += ',header' }
+        $Attributes['options'] = $newOpt
+
+        # 各行の先頭に空の連番セルを挿入
+        $ColumnCount++
+        $globalAutoNumberColumn = $true
+        $newRows = @()
+        foreach ($row in $Rows) {
+            $isHdr = $detectedHeader -and ($row.Count -gt 0) -and $row[0].IsHeader
+            $emptyCell = @{ Text = ''; RowSpan = 1; ColSpan = 1; IsHeader = $isHdr }
+            $newRows += , (@($emptyCell) + $row)
+        }
+        $Rows = $newRows
+    }
+
     $range = $Document.Range($Document.Content.End - 1, $Document.Content.End - 1)
 
     $table = $Document.Tables.Add($range, $Rows.Count, $ColumnCount)
@@ -1808,6 +1842,39 @@ function Add-WordTable {
                 $cellRange.Merge($table.Cell($r + $cell.RowSpan, $c + $cell.ColSpan))
             }
             catch {}
+        }
+    }
+
+    # ---- 縦書きヘッダー: options="...,vertical-header" または [vertical-header] で指定
+    $hasVerticalHeader = $false
+    if ($Attributes) {
+        if ($Attributes.ContainsKey('options') -and ([string]$Attributes['options']) -match 'vertical-header') {
+            $hasVerticalHeader = $true
+        }
+        elseif ($Attributes.Values -contains 'vertical-header') {
+            $hasVerticalHeader = $true
+        }
+    }
+
+    if ($hasVerticalHeader) {
+        $isHeaderOpt = $Attributes.ContainsKey('options') -and ([string]$Attributes['options']) -match 'header'
+        for ($r = 0; $r -lt $Rows.Count; $r++) {
+            for ($c = 0; $c -lt $ColumnCount; $c++) {
+                # グローバル連番列（c=0）は縦書き対象外
+                if ($globalAutoNumberColumn -and $c -eq 0) { continue }
+                $key = "$r,$c"
+                if (-not $grid.ContainsKey($key)) { continue }
+                $cell = $grid[$key]
+                $isHdrCell = $cell.IsHeader -or ($isHeaderOpt -and $r -eq 0)
+                if ($isHdrCell) {
+                    try {
+                        $tc = $table.Cell($r + 1, $c + 1)
+                        $tc.Range.Orientation = 3   # wdTextOrientationUpward (下→上, 90度)
+                        $tc.VerticalAlignment = 1   # wdCellAlignVerticalCenter
+                    }
+                    catch {}
+                }
+            }
         }
     }
 
@@ -3142,7 +3209,11 @@ function Build-WordDocument {
                         }
                     }
 
-                    if ($Parsed.Attributes.ContainsKey('sectnums') -and $nums.Count -gt 0) {
+                    $useSectionNums = $Parsed.Attributes.ContainsKey('sectnums') -or
+                    ($Config.Document -and
+                    $Config.Document.PSObject.Properties.Name -contains 'SectionNumbers' -and
+                    [bool]$Config.Document.SectionNumbers)
+                    if ($useSectionNums -and $nums.Count -gt 0) {
                         $headingText = ($nums -join '.') + ' ' + $element.Text.Trim()
                     }
                     else {
@@ -3314,6 +3385,17 @@ function Build-WordDocument {
                         -StyleConfig $Config.Styles.TableCaption `
                         -InternalLinkMap $internalLinkMap | Out-Null
                 }                
+                'include-source' {
+                    $srcStyle = if ($element.StyleConfig) { $element.StyleConfig } else { $Config.Styles.IncludeSource }
+                    if (-not $srcStyle) {
+                        $srcStyle = [pscustomobject]@{ FontName = '游ゴシック'; Size = 9; Bold = $false; Italic = $true; Color = 8421504 }
+                    }
+                    Append-TextParagraph `
+                        -Document $document `
+                        -Text "[ソース: $($element.Text)]" `
+                        -StyleConfig $srcStyle `
+                        -InternalLinkMap $internalLinkMap | Out-Null
+                }
                 default { 
                     Append-TextParagraph -Document $document -Text ('[未対応要素: ' + $element.Type + ']') -StyleConfig $Config.Styles.Body -InternalLinkMap $internalLinkMap | Out-Null 
                 }
@@ -3632,6 +3714,14 @@ function Parse-MarkdownFile {
             if (Test-Path -LiteralPath $resolvedInclude -PathType Leaf) {
                 $childAttrs = @{}
                 foreach ($k in $Attributes.Keys) { $childAttrs[$k] = $Attributes[$k] }
+
+                # インクルードファイル名表示（設定で有効化）
+                if ($Config.Markdown -and $Config.Markdown.ShowIncludeSource) {
+                    $displayName = [System.IO.Path]::GetFileName($resolvedInclude)
+                    $labelStyle = if ($Config.Markdown.IncludeSourceStyle) { $Config.Markdown.IncludeSourceStyle } else { $null }
+                    $elements.Add((New-Element -Type 'include-source' -Data @{ Text = $displayName; StyleConfig = $labelStyle }))
+                }
+
                 $included = Parse-MarkdownFile -Path $resolvedInclude -Attributes $childAttrs -Visited $Visited -Config $Config -LevelOffset ($LevelOffset + 1)
                 foreach ($child in $included.Elements) { $elements.Add($child) }
             }
@@ -3819,6 +3909,37 @@ function Parse-MarkdownFile {
             continue
         }
 
+        # draw.io: !drawio[caption](path.drawio)
+        if ($trimmed -match '^!drawio\[([^\]]*)\]\(([^\)]+)\)$') {
+            Flush-MdParagraph
+            $caption = $matches[1].Trim()
+            $drawioRef = $matches[2].Trim()
+
+            $drawioOptions = @{ 'file' = $drawioRef }
+            $render = Invoke-DrawIoRender `
+                -SourceFilePath $absolutePath `
+                -Options $drawioOptions `
+                -Config $Config
+
+            if ($render.Success) {
+                $elements.Add((New-Element -Type 'image' -Data @{
+                            Path        = $render.ImagePath
+                            Caption     = if (-not [string]::IsNullOrWhiteSpace($caption)) { $caption } else { $pendingCaption }
+                            GeneratedBy = 'drawio'
+                        }))
+            }
+            else {
+                $elements.Add((New-Element -Type 'admonition' -Data @{
+                            Kind = 'WARNING'
+                            Text = "[draw.io 画像生成失敗] $($render.ErrorMessage)"
+                        }))
+            }
+
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
         # 単独画像行: ![alt](path)
         if ($trimmed -match '^!\[([^\]]*)\]\(([^\)]+)\)$') {
             Flush-MdParagraph
@@ -3874,7 +3995,7 @@ try {
         }
 
         $baseOutput = Join-Path $targetDir ($baseName + '.docx')
-        if (-not (Test-Path -LiteralPath $baseOutput)) {
+        if ($Overwrite -or -not (Test-Path -LiteralPath $baseOutput)) {
             $outputFullPath = $baseOutput
         }
         else {

@@ -1,5 +1,7 @@
 ﻿{
   "Document": {
+    "AutoNumberTables": true,
+    "SectionNumbers": true,
     "PageSetup": {
       "TopMarginMm": 25,
       "BottomMarginMm": 20,
@@ -54,6 +56,18 @@
   },
   "Image": {
     "MaxWidthMm": 160
+  },
+  "Markdown": {
+    "ShowIncludeSource": true,
+    "IncludeSourceStyle": {
+      "FontName": "游ゴシック",
+      "Size": 9,
+      "Bold": false,
+      "Italic": true,
+      "Color": 8421504,
+      "SpaceBefore": 4,
+      "SpaceAfter": 0
+    }
   },
   "Styles": {
     "Title": {
