@@ -6,7 +6,8 @@ param(
     [string]$OutputDir,
     [string]$ConfigFullPath = ".\conf\word-style.sample.json",
     [string]$TemplateFullPath = ".\Template\cover-template.docx",
-    [switch]$Overwrite = $true
+    [switch]$Overwrite = $true,
+    [switch]$TestMode
 )
 
 $script:DebugLogPath = Join-Path $PSScriptRoot 'convert-debug.log'
@@ -68,23 +69,24 @@ else {
 $DebugAdocFullPath = ""
 
 # インプットチェック
-
-if (-not [string]::IsNullOrWhiteSpace($DebugAdocFullPath)) {
-    $AdocFullPath = @($DebugAdocFullPath)
-}
-
-if (-not $AdocFullPath -or $AdocFullPath.Count -eq 0) {
-    Add-Type -AssemblyName System.Windows.Forms
-    $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Filter = 'AsciiDoc/Markdown files (*.adoc;*.md;*.markdown)|*.adoc;*.md;*.markdown|All files (*.*)|*.*'
-    $dialog.Title = '変換元ファイルを選択してください（複数選択可）'
-    $dialog.Multiselect = $true
-    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $AdocFullPath = $dialog.FileNames
+if (-not $TestMode) {
+    if (-not [string]::IsNullOrWhiteSpace($DebugAdocFullPath)) {
+        $AdocFullPath = @($DebugAdocFullPath)
     }
-    else {
-        Write-Output 'ファイルが選択されませんでした。処理を中止します。'
-        exit 0
+
+    if (-not $AdocFullPath -or $AdocFullPath.Count -eq 0) {
+        Add-Type -AssemblyName System.Windows.Forms
+        $dialog = New-Object System.Windows.Forms.OpenFileDialog
+        $dialog.Filter = 'AsciiDoc/Markdown files (*.adoc;*.md;*.markdown)|*.adoc;*.md;*.markdown|All files (*.*)|*.*'
+        $dialog.Title = '変換元ファイルを選択してください（複数選択可）'
+        $dialog.Multiselect = $true
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $AdocFullPath = $dialog.FileNames
+        }
+        else {
+            Write-Output 'ファイルが選択されませんでした。処理を中止します。'
+            exit 0
+        }
     }
 }
 
@@ -3522,6 +3524,936 @@ function Normalize-MarkdownInlineText {
     return $value.TrimEnd()
 }
 
+function Get-JsonIncludeErrorText {
+    param(
+        [string]$ErrorCode,
+        [string]$FilePath
+    )
+    return "[ERROR]`n$ErrorCode`n$FilePath"
+}
+
+function Get-JsonTreeChildren {
+    param($Node)
+
+    $children = New-Object System.Collections.Generic.List[object]
+
+    if ($Node -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($prop in $Node.PSObject.Properties) {
+            $children.Add([pscustomobject]@{
+                    Label = [string]$prop.Name
+                    Value = $prop.Value
+                })
+        }
+    }
+    elseif ($Node -is [System.Object[]]) {
+        $priorityKeys = @('id', 'name', 'screenId', 'itemId', 'label')
+        $i = 0
+        foreach ($item in $Node) {
+            $label = "[$i]"
+            if ($item -is [System.Management.Automation.PSCustomObject]) {
+                foreach ($key in $priorityKeys) {
+                    $prop = $item.PSObject.Properties[$key]
+                    if ($null -ne $prop -and
+                        $null -ne $prop.Value -and
+                        $prop.Value -isnot [System.Object[]] -and
+                        $prop.Value -isnot [System.Management.Automation.PSCustomObject]) {
+                        $label = [string]$prop.Value
+                        break
+                    }
+                }
+            }
+            elseif ($null -ne $item -and
+                $item -isnot [System.Object[]] -and
+                $item -isnot [System.Management.Automation.PSCustomObject]) {
+                $label = [string]$item
+            }
+            $children.Add([pscustomobject]@{
+                    Label = $label
+                    Value = $item
+                })
+            $i++
+        }
+    }
+
+    return $children
+}
+
+function Build-JsonTreeLines {
+    param(
+        $Node,
+        [string]$Prefix = '',
+        [bool]$IsTopLevel = $true
+    )
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $children = @(Get-JsonTreeChildren -Node $Node)
+
+    for ($i = 0; $i -lt $children.Count; $i++) {
+        $child = $children[$i]
+        $isLast = ($i -eq $children.Count - 1)
+
+        $hasChildren = ($child.Value -is [System.Management.Automation.PSCustomObject]) -or
+        ($child.Value -is [System.Object[]])
+
+        # leaf node: append scalar value as "key: value"
+        $displayLabel = $child.Label
+        if (-not $hasChildren -and $null -ne $child.Value) {
+            $valStr = if ($child.Value -is [bool]) { if ($child.Value) { 'true' } else { 'false' } }
+            else { [string]$child.Value }
+            if (-not [string]::IsNullOrWhiteSpace($valStr)) {
+                $displayLabel = "$($child.Label): $valStr"
+            }
+        }
+
+        if ($IsTopLevel) {
+            $lines.Add($displayLabel)
+            $childPrefix = ''
+        }
+        else {
+            $connector = if ($isLast) { '└─ ' } else { '├─ ' }
+            $lines.Add($Prefix + $connector + $displayLabel)
+            $childPrefix = if ($isLast) { $Prefix + '   ' } else { $Prefix + '│  ' }
+        }
+
+        if ($hasChildren) {
+            $subLines = @(Build-JsonTreeLines -Node $child.Value -Prefix $childPrefix -IsTopLevel $false)
+            foreach ($sl in $subLines) {
+                $lines.Add($sl)
+            }
+        }
+    }
+
+    return $lines
+}
+
+function Invoke-JsonTableDirective {
+    param(
+        [string]$FilePath,
+        [string]$BaseDirectory
+    )
+
+    $result = @{
+        Success   = $false
+        TableInfo = $null
+        ErrorCode = $null
+        FilePath  = $FilePath
+        Metadata  = $null
+    }
+
+    $absPath = $null
+    try {
+        $absPath = Get-AbsolutePath -Path $FilePath -BaseDirectory $BaseDirectory
+    }
+    catch {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    if (-not (Test-Path -LiteralPath $absPath -PathType Leaf)) {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    $rawJson = $null
+    try {
+        $rawJson = Get-Content -LiteralPath $absPath -Raw -Encoding UTF8
+    }
+    catch {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    if ([string]::IsNullOrWhiteSpace($rawJson)) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    $jsonData = $null
+    try {
+        $jsonData = $rawJson | ConvertFrom-Json
+    }
+    catch {
+        $lineInfo = ''
+        if ($_.Exception.Message -match '\((\d+)\):') {
+            $charPos = [int]$matches[1]
+            $before = if ($charPos -le $rawJson.Length) { $rawJson.Substring(0, $charPos) } else { $rawJson }
+            $lineNum = ($before -split "`n").Count
+            $lineInfo = " (line $lineNum)"
+        }
+        $result.ErrorCode = "Invalid JSON$lineInfo"
+        return [pscustomobject]$result
+    }
+
+    # _* プロパティを除外しメタデータ・tableinfo を収集してデータ配列を特定する
+    $tableInfoDef = $null
+    if ($jsonData -is [System.Management.Automation.PSCustomObject]) {
+        $metaDesc = $null
+        $metaRules = $null
+        $found = $null
+
+        foreach ($prop in $jsonData.PSObject.Properties) {
+            $pname = [string]$prop.Name
+            $val = $prop.Value
+
+            if ($pname.StartsWith('_')) { continue }
+
+            if ($pname -eq 'description' -and $val -is [string]) {
+                $metaDesc = $val
+                continue
+            }
+            if ($pname -eq 'rules') {
+                if ($val -is [System.Object[]]) { $metaRules = $val }
+                elseif ($val -is [string]) { $metaRules = @($val) }
+                continue
+            }
+            if ($pname -eq 'columns' -and $val -is [System.Management.Automation.PSCustomObject]) {
+                $tableInfoDef = $val
+                continue
+            }
+            if ($null -eq $found -and $val -is [System.Object[]] -and $val.Count -gt 0 -and
+                $val[0] -is [System.Management.Automation.PSCustomObject]) {
+                $found = $val
+            }
+        }
+
+        if ($null -eq $found) {
+            $result.ErrorCode = 'Unsupported JSON structure'
+            return [pscustomobject]$result
+        }
+        $jsonData = $found
+
+        if ($null -ne $metaDesc -or $null -ne $metaRules) {
+            $result.Metadata = [pscustomobject]@{
+                Description = $metaDesc
+                Rules       = $metaRules
+            }
+        }
+    }
+
+    if ($jsonData -isnot [System.Object[]]) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    if ($jsonData.Count -eq 0) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    $columns = @()
+    $colHeaders = @{}
+
+    if ($null -ne $tableInfoDef) {
+        # tableinfo が定義されている場合はその順序・タイトルで列を確定する
+        foreach ($tiProp in $tableInfoDef.PSObject.Properties) {
+            $cname = [string]$tiProp.Name
+            $columns += $cname
+            $colHeaders[$cname] = [string]$tiProp.Value
+        }
+        foreach ($item in $jsonData) {
+            if ($item -isnot [System.Management.Automation.PSCustomObject]) {
+                $result.ErrorCode = 'Unsupported JSON structure'
+                return [pscustomobject]$result
+            }
+        }
+    }
+    else {
+        # 全要素を走査してスカラープロパティ名を収集（_* およびネスト型は除外）
+        $colOrder = New-Object System.Collections.Specialized.OrderedDictionary
+        $nestedCols = New-Object System.Collections.Generic.HashSet[string]
+
+        foreach ($item in $jsonData) {
+            if ($item -isnot [System.Management.Automation.PSCustomObject]) {
+                $result.ErrorCode = 'Unsupported JSON structure'
+                return [pscustomobject]$result
+            }
+            foreach ($prop in $item.PSObject.Properties) {
+                $pname = [string]$prop.Name
+                if ($pname.StartsWith('_')) { continue }
+                $val = $prop.Value
+                if ($val -is [System.Object[]] -or $val -is [System.Management.Automation.PSCustomObject]) {
+                    [void]$nestedCols.Add($pname)
+                }
+                elseif (-not $colOrder.Contains($pname)) {
+                    $colOrder[$pname] = $true
+                }
+            }
+        }
+
+        foreach ($n in $nestedCols) { $colOrder.Remove($n) }
+        foreach ($k in $colOrder.Keys) { $columns += [string]$k }
+    }
+
+    if ($columns.Count -eq 0) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    $rows = New-Object System.Collections.Generic.List[object]
+
+    $headerCells = @()
+    foreach ($col in $columns) {
+        $hdr = if ($colHeaders.ContainsKey($col)) { $colHeaders[$col] } else { $col }
+        $headerCells += @{ Text = $hdr; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+    }
+    $rows.Add($headerCells)
+
+    foreach ($item in $jsonData) {
+        $cells = @()
+        foreach ($col in $columns) {
+            $prop = $item.PSObject.Properties[$col]
+            $val = if ($null -ne $prop) { $prop.Value } else { $null }
+            if ($val -is [System.Object[]]) {
+                # スカラー要素の配列はカンマ区切りで出力
+                $parts = @()
+                foreach ($v in $val) {
+                    if ($v -isnot [System.Object[]] -and $v -isnot [System.Management.Automation.PSCustomObject]) {
+                        $parts += [string]$v
+                    }
+                }
+                $val = if ($parts.Count -gt 0) { $parts -join ', ' } else { $null }
+            }
+            elseif ($val -is [System.Management.Automation.PSCustomObject]) {
+                $val = $null
+            }
+            $text = if ($null -eq $val) { '' }
+            elseif ($val -is [bool]) { if ($val) { 'true' } else { 'false' } }
+            else { [string]$val }
+            $cells += @{ Text = $text; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+        }
+        $rows.Add($cells)
+    }
+
+    $result.Success = $true
+    $result.TableInfo = [pscustomobject]@{
+        Rows       = $rows.ToArray()
+        MaxColumns = $columns.Count
+    }
+    return [pscustomobject]$result
+}
+
+function Invoke-JsonTreeDirective {
+    param(
+        [string]$FilePath,
+        [string]$BaseDirectory
+    )
+
+    $result = @{
+        Success   = $false
+        TreeText  = $null
+        ErrorCode = $null
+        FilePath  = $FilePath
+    }
+
+    $absPath = $null
+    try {
+        $absPath = Get-AbsolutePath -Path $FilePath -BaseDirectory $BaseDirectory
+    }
+    catch {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    if (-not (Test-Path -LiteralPath $absPath -PathType Leaf)) {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    $rawJson = $null
+    try {
+        $rawJson = Get-Content -LiteralPath $absPath -Raw -Encoding UTF8
+    }
+    catch {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    if ([string]::IsNullOrWhiteSpace($rawJson)) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    $jsonData = $null
+    try {
+        $jsonData = $rawJson | ConvertFrom-Json
+    }
+    catch {
+        $lineInfo = ''
+        if ($_.Exception.Message -match '\((\d+)\):') {
+            $charPos = [int]$matches[1]
+            $before = if ($charPos -le $rawJson.Length) { $rawJson.Substring(0, $charPos) } else { $rawJson }
+            $lineNum = ($before -split "`n").Count
+            $lineInfo = " (line $lineNum)"
+        }
+        $result.ErrorCode = "Invalid JSON$lineInfo"
+        return [pscustomobject]$result
+    }
+
+    if ($null -eq $jsonData) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    try {
+        $lines = Build-JsonTreeLines -Node $jsonData -Prefix '' -IsTopLevel $true
+        $result.TreeText = ($lines -join "`n")
+        $result.Success = $true
+    }
+    catch {
+        $result.ErrorCode = 'Unsupported JSON structure'
+    }
+
+    return [pscustomobject]$result
+}
+
+function Invoke-JsonConfigDirective {
+    param(
+        [string]$FilePath,
+        [string]$BaseDirectory
+    )
+
+    $result = @{
+        Success     = $false
+        ErrorCode   = $null
+        FilePath    = $FilePath
+        Description = $null
+        Rules       = $null
+        Categories  = @()
+    }
+
+    $absPath = $null
+    try {
+        $absPath = Get-AbsolutePath -Path $FilePath -BaseDirectory $BaseDirectory
+    }
+    catch {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    if (-not (Test-Path -LiteralPath $absPath -PathType Leaf)) {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    $rawJson = $null
+    try {
+        $rawJson = Get-Content -LiteralPath $absPath -Raw -Encoding UTF8
+    }
+    catch {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    if ([string]::IsNullOrWhiteSpace($rawJson)) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    $jsonData = $null
+    try {
+        $jsonData = $rawJson | ConvertFrom-Json
+    }
+    catch {
+        $lineInfo = ''
+        if ($_.Exception.Message -match '\((\d+)\):') {
+            $charPos = [int]$matches[1]
+            $before = if ($charPos -le $rawJson.Length) { $rawJson.Substring(0, $charPos) } else { $rawJson }
+            $lineNum = ($before -split "`n").Count
+            $lineInfo = " (line $lineNum)"
+        }
+        $result.ErrorCode = "Invalid JSON$lineInfo"
+        return [pscustomobject]$result
+    }
+
+    if ($jsonData -isnot [System.Management.Automation.PSCustomObject]) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    $rootDesc = $null
+    $rootRules = $null
+    $categories = New-Object System.Collections.Generic.List[object]
+
+    foreach ($prop in $jsonData.PSObject.Properties) {
+        $pname = [string]$prop.Name
+        $val = $prop.Value
+
+        if ($pname.StartsWith('_')) { continue }
+
+        if ($pname -eq 'description' -and $val -is [string]) {
+            $rootDesc = $val
+            continue
+        }
+        if ($pname -eq 'rules') {
+            if ($val -is [System.Object[]]) { $rootRules = $val }
+            elseif ($val -is [string]) { $rootRules = @($val) }
+            continue
+        }
+
+        if ($val -is [System.Management.Automation.PSCustomObject]) {
+            $catDesc = $null
+            $constants = New-Object System.Collections.Generic.List[object]
+
+            foreach ($cProp in $val.PSObject.Properties) {
+                $cname = [string]$cProp.Name
+                $cval = $cProp.Value
+
+                if ($cname -eq '_description') {
+                    if ($cval -is [string]) { $catDesc = $cval }
+                    continue
+                }
+                if ($cname.StartsWith('_')) { continue }
+
+                if ($cval -is [System.Management.Automation.PSCustomObject]) {
+                    $vProp = $cval.PSObject.Properties['value']
+                    $dProp = $cval.PSObject.Properties['description']
+
+                    $constValue = ''
+                    if ($null -ne $vProp) {
+                        $v = $vProp.Value
+                        if ($v -is [System.Object[]]) {
+                            $parts = @()
+                            foreach ($item in $v) {
+                                if ($item -isnot [System.Object[]] -and
+                                    $item -isnot [System.Management.Automation.PSCustomObject]) {
+                                    $parts += [string]$item
+                                }
+                            }
+                            $constValue = $parts -join ', '
+                        }
+                        elseif ($v -is [bool]) {
+                            $constValue = if ($v) { 'true' } else { 'false' }
+                        }
+                        elseif ($null -ne $v) {
+                            $constValue = [string]$v
+                        }
+                    }
+
+                    $constDesc = ''
+                    if ($null -ne $dProp -and $dProp.Value -is [string]) {
+                        $constDesc = [string]$dProp.Value
+                    }
+
+                    $constants.Add([pscustomobject]@{
+                            Name        = $cname
+                            Value       = $constValue
+                            Description = $constDesc
+                        })
+                }
+            }
+
+            $categories.Add([pscustomobject]@{
+                    Key         = $pname
+                    Description = $catDesc
+                    Constants   = $constants.ToArray()
+                })
+        }
+    }
+
+    $result.Success = $true
+    $result.Description = $rootDesc
+    $result.Rules = $rootRules
+    $result.Categories = $categories.ToArray()
+    return [pscustomobject]$result
+}
+
+function Invoke-JsonEnumDirective {
+    param(
+        [string]$FilePath,
+        [string]$BaseDirectory
+    )
+
+    $result = @{
+        Success     = $false
+        ErrorCode   = $null
+        FilePath    = $FilePath
+        Description = $null
+        Rules       = $null
+        Enums       = @()
+    }
+
+    $absPath = $null
+    try {
+        $absPath = Get-AbsolutePath -Path $FilePath -BaseDirectory $BaseDirectory
+    }
+    catch {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    if (-not (Test-Path -LiteralPath $absPath -PathType Leaf)) {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    $rawJson = $null
+    try {
+        $rawJson = Get-Content -LiteralPath $absPath -Raw -Encoding UTF8
+    }
+    catch {
+        $result.ErrorCode = 'File not found'
+        return [pscustomobject]$result
+    }
+
+    if ([string]::IsNullOrWhiteSpace($rawJson)) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    $jsonData = $null
+    try {
+        $jsonData = $rawJson | ConvertFrom-Json
+    }
+    catch {
+        $lineInfo = ''
+        if ($_.Exception.Message -match '\((\d+)\):') {
+            $charPos = [int]$matches[1]
+            $before = if ($charPos -le $rawJson.Length) { $rawJson.Substring(0, $charPos) } else { $rawJson }
+            $lineNum = ($before -split "`n").Count
+            $lineInfo = " (line $lineNum)"
+        }
+        $result.ErrorCode = "Invalid JSON$lineInfo"
+        return [pscustomobject]$result
+    }
+
+    if ($jsonData -isnot [System.Management.Automation.PSCustomObject]) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    $rootDesc = $null
+    $rootRules = $null
+    $columnDefs = $null
+    $enumsRaw = $null
+
+    foreach ($prop in $jsonData.PSObject.Properties) {
+        $pname = [string]$prop.Name
+        $val = $prop.Value
+        if ($pname.StartsWith('_')) { continue }
+        switch ($pname) {
+            'description' { if ($val -is [string]) { $rootDesc = $val } }
+            'rules' {
+                if ($val -is [System.Object[]]) { $rootRules = $val }
+                elseif ($val -is [string]) { $rootRules = @($val) }
+            }
+            'columns' { if ($val -is [System.Management.Automation.PSCustomObject]) { $columnDefs = $val } }
+            'enums' {
+                if ($val -is [System.Object[]]) { $enumsRaw = $val }
+                elseif ($val -is [System.Management.Automation.PSCustomObject]) { $enumsRaw = @($val) }
+            }
+        }
+    }
+
+    if ($null -eq $enumsRaw) {
+        $result.ErrorCode = 'Unsupported JSON structure'
+        return [pscustomobject]$result
+    }
+
+    # Build base column name→header map from 'columns' definition
+    $baseColNames = @()
+    $baseColHeaders = @{}
+    if ($null -ne $columnDefs) {
+        foreach ($cProp in $columnDefs.PSObject.Properties) {
+            $cname = [string]$cProp.Name
+            $baseColNames += $cname
+            $baseColHeaders[$cname] = [string]$cProp.Value
+        }
+    }
+
+    $enumList = New-Object System.Collections.Generic.List[object]
+
+    foreach ($enumItem in $enumsRaw) {
+        if ($enumItem -isnot [System.Management.Automation.PSCustomObject]) { continue }
+
+        $enumNameProp = $enumItem.PSObject.Properties['enumName']
+        if ($null -eq $enumNameProp) {
+            $enumList.Add([pscustomobject]@{
+                    EnumName    = '[enumNameなし]'
+                    Description = $null
+                    HasValues   = $false
+                    TableInfo   = $null
+                    IsError     = $true
+                })
+            continue
+        }
+
+        $enumName = [string]$enumNameProp.Value
+        $enumDesc = $null
+        $enumDescProp = $enumItem.PSObject.Properties['description']
+        if ($null -ne $enumDescProp -and $enumDescProp.Value -is [string]) {
+            $enumDesc = [string]$enumDescProp.Value
+        }
+
+        $valuesProp = $enumItem.PSObject.Properties['values']
+        $valuesRaw = if ($null -ne $valuesProp) { $valuesProp.Value } else { $null }
+        if ($valuesRaw -is [System.Management.Automation.PSCustomObject]) { $valuesRaw = @($valuesRaw) }
+        if ($null -eq $valuesRaw -or $valuesRaw -isnot [System.Object[]]) {
+            $enumList.Add([pscustomobject]@{
+                    EnumName    = $enumName
+                    Description = $enumDesc
+                    HasValues   = $false
+                    TableInfo   = $null
+                    IsError     = $false
+                })
+            continue
+        }
+
+        # Collect columns: base columns first, then extra columns found in values
+        $colOrder = New-Object System.Collections.Specialized.OrderedDictionary
+        foreach ($c in $baseColNames) { $colOrder[$c] = $true }
+        foreach ($vItem in $valuesRaw) {
+            if ($vItem -isnot [System.Management.Automation.PSCustomObject]) { continue }
+            foreach ($vProp in $vItem.PSObject.Properties) {
+                $vpname = [string]$vProp.Name
+                if ($vpname.StartsWith('_')) { continue }
+                if (-not $colOrder.Contains($vpname)) { $colOrder[$vpname] = $true }
+            }
+        }
+        $columns = @()
+        foreach ($k in $colOrder.Keys) { $columns += [string]$k }
+
+        # Build table
+        $rows = New-Object System.Collections.Generic.List[object]
+        $headerCells = @()
+        foreach ($col in $columns) {
+            $hdr = if ($baseColHeaders.ContainsKey($col)) { $baseColHeaders[$col] } else { $col }
+            $headerCells += @{ Text = $hdr; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+        }
+        $rows.Add($headerCells)
+
+        foreach ($vItem in $valuesRaw) {
+            if ($vItem -isnot [System.Management.Automation.PSCustomObject]) { continue }
+            $dataCells = @()
+            foreach ($col in $columns) {
+                $vp = $vItem.PSObject.Properties[$col]
+                $val = if ($null -ne $vp) { $vp.Value } else { $null }
+                if ($val -is [System.Object[]]) {
+                    $parts = @()
+                    foreach ($item in $val) {
+                        if ($item -isnot [System.Object[]] -and $item -isnot [System.Management.Automation.PSCustomObject]) {
+                            $parts += [string]$item
+                        }
+                    }
+                    $val = $parts -join ', '
+                }
+                elseif ($val -is [System.Management.Automation.PSCustomObject]) { $val = $null }
+                $text = if ($null -eq $val) { '' }
+                elseif ($val -is [bool]) { if ($val) { 'true' } else { 'false' } }
+                else { [string]$val }
+                $dataCells += @{ Text = $text; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+            }
+            $rows.Add($dataCells)
+        }
+
+        $enumList.Add([pscustomobject]@{
+                EnumName    = $enumName
+                Description = $enumDesc
+                HasValues   = $true
+                TableInfo   = [pscustomobject]@{ Rows = $rows.ToArray(); MaxColumns = $columns.Count }
+                IsError     = $false
+            })
+    }
+
+    $result.Success = $true
+    $result.Description = $rootDesc
+    $result.Rules = $rootRules
+    $result.Enums = $enumList.ToArray()
+    return [pscustomobject]$result
+}
+
+function Build-WorkflowPlantUml {
+    param(
+        $Workflow,
+        $Actors,
+        [string]$Filter   # $null=all, 'PREPAID', 'POSTPAID'
+    )
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine('@startuml')
+    [void]$sb.AppendLine('')
+
+    foreach ($sid in $Workflow.States.Keys) {
+        $lbl = ([string]$Workflow.States[$sid].Label) -replace '"', "'"
+        [void]$sb.AppendLine("state `"$lbl`" as $sid")
+    }
+    [void]$sb.AppendLine('')
+
+    foreach ($t in $Workflow.Transitions) {
+        $cond = $t.Condition
+        if ($null -ne $Filter) {
+            if (-not [string]::IsNullOrWhiteSpace($cond)) {
+                if ($cond -notmatch $Filter) { continue }
+            }
+        }
+
+        $actorLabel = if (-not [string]::IsNullOrWhiteSpace($t.Actor) -and $Actors.ContainsKey($t.Actor)) {
+            $Actors[$t.Actor]
+        }
+        else { $t.Actor }
+
+        $label = "$($t.Trigger)\n$actorLabel"
+        if (-not [string]::IsNullOrWhiteSpace($cond)) { $label += "\n[$cond]" }
+
+        foreach ($fromVal in $t.FromList) {
+            $arrow = if ($fromVal -eq '[*]') { "[*] --> $($t.To)" } else { "$fromVal --> $($t.To)" }
+            [void]$sb.AppendLine("$arrow : $label")
+        }
+    }
+
+    [void]$sb.AppendLine('')
+    [void]$sb.Append('@enduml')
+    return $sb.ToString()
+}
+
+function Invoke-JsonWorkflowDirective {
+    param(
+        [string]$FilePath,
+        [string]$BaseDirectory
+    )
+
+    $result = @{
+        Success   = $false
+        ErrorCode = $null
+        FilePath  = $FilePath
+        Actors    = @{}
+        Workflows = @()
+    }
+
+    if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+        try { Import-Module powershell-yaml -ErrorAction Stop }
+        catch {
+            $result.ErrorCode = 'YAML module required. Run: Install-Module powershell-yaml'
+            return [pscustomobject]$result
+        }
+    }
+
+    $absPath = $null
+    try { $absPath = Get-AbsolutePath -Path $FilePath -BaseDirectory $BaseDirectory }
+    catch { $result.ErrorCode = 'File not found'; return [pscustomobject]$result }
+    if (-not (Test-Path -LiteralPath $absPath -PathType Leaf)) {
+        $result.ErrorCode = 'File not found'; return [pscustomobject]$result
+    }
+
+    $rawContent = $null
+    try { $rawContent = Get-Content -LiteralPath $absPath -Raw -Encoding UTF8 }
+    catch { $result.ErrorCode = 'File not found'; return [pscustomobject]$result }
+
+    $yaml = $null
+    try { $yaml = $rawContent | ConvertFrom-Yaml }
+    catch { $result.ErrorCode = "Invalid YAML: $($_.Exception.Message)"; return [pscustomobject]$result }
+
+    if ($null -eq $yaml -or $yaml -isnot [System.Collections.IDictionary]) {
+        $result.ErrorCode = 'Unsupported YAML structure'; return [pscustomobject]$result
+    }
+
+    # Actors
+    $actors = @{}
+    if ($yaml.Keys -contains 'actors' -and $null -ne $yaml['actors']) {
+        $ad = $yaml['actors']
+        if ($ad -is [System.Collections.IDictionary]) {
+            foreach ($rid in $ad.Keys) {
+                $ao = $ad[$rid]
+                $lbl = if ($null -ne $ao -and $ao -is [System.Collections.IDictionary] -and $ao.Keys -contains 'label') {
+                    [string]$ao['label']
+                }
+                else { [string]$rid }
+                $actors[[string]$rid] = $lbl
+            }
+        }
+    }
+
+    # Workflows: all root keys except 'actors'
+    $workflows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($wfKey in $yaml.Keys) {
+        if ([string]$wfKey -eq 'actors') { continue }
+        $wf = $yaml[$wfKey]
+        if ($null -eq $wf -or $wf -isnot [System.Collections.IDictionary]) { continue }
+
+        $wfDesc = if ($wf.Keys -contains 'description') { [string]$wf['description'] } else { $null }
+
+        # States
+        $statesMap = [ordered]@{}
+        if ($wf.Keys -contains 'states' -and $null -ne $wf['states'] -and $wf['states'] -is [System.Collections.IDictionary]) {
+            foreach ($sid in $wf['states'].Keys) {
+                $so = $wf['states'][$sid]
+                $sl = if ($null -ne $so -and $so -is [System.Collections.IDictionary] -and $so.Keys -contains 'label') { [string]$so['label'] } else { [string]$sid }
+                $sd = if ($null -ne $so -and $so -is [System.Collections.IDictionary] -and $so.Keys -contains 'description') { [string]$so['description'] } else { '' }
+                $statesMap[[string]$sid] = @{ Label = $sl; Description = $sd }
+            }
+        }
+
+        # TransitionColumns
+        $colDefs = [ordered]@{}
+        if ($wf.Keys -contains 'transitionColumns' -and $null -ne $wf['transitionColumns'] -and $wf['transitionColumns'] -is [System.Collections.IDictionary]) {
+            foreach ($ck in $wf['transitionColumns'].Keys) { $colDefs[[string]$ck] = [string]$wf['transitionColumns'][$ck] }
+        }
+
+        # Transitions
+        $transList = New-Object System.Collections.Generic.List[object]
+        $hasConditions = $false
+
+        if ($wf.Keys -contains 'transitions' -and $null -ne $wf['transitions']) {
+            $td = $wf['transitions']
+            if ($td -isnot [System.Object[]]) { $td = @($td) }
+
+            foreach ($t in $td) {
+                if ($null -eq $t -or $t -isnot [System.Collections.IDictionary]) { continue }
+
+                $fromRaw = if ($t.Keys -contains 'from') { $t['from'] } else { $null }
+                $fromList = @()
+                if ($null -eq $fromRaw) {
+                    $fromList = @('[*]')
+                }
+                elseif ($fromRaw -is [System.Object[]]) {
+                    foreach ($f in $fromRaw) { $fromList += [string]$f }
+                }
+                else {
+                    $fs = [string]$fromRaw
+                    $fromList = if ([string]::IsNullOrWhiteSpace($fs) -or $fs -eq 'null') { @('[*]') } else { @($fs) }
+                }
+
+                $toRaw = if ($t.Keys -contains 'to') { $t['to'] } else { $null }
+                $toVal = if ($null -eq $toRaw) { '[*]' } else { [string]$toRaw }
+
+                $cond = if ($t.Keys -contains 'condition') { [string]$t['condition'] } else { $null }
+                if (-not [string]::IsNullOrWhiteSpace($cond)) { $hasConditions = $true }
+
+                $std = @('from', 'to', 'trigger', 'actor', 'screen', 'notes', 'condition')
+                $extras = @{}
+                foreach ($ek in $t.Keys) {
+                    if ($std -notcontains [string]$ek) { $extras[[string]$ek] = [string]$t[$ek] }
+                }
+
+                $transList.Add([pscustomobject]@{
+                        FromList  = $fromList
+                        To        = $toVal
+                        Trigger   = if ($t.Keys -contains 'trigger') { [string]$t['trigger'] } else { '' }
+                        Actor     = if ($t.Keys -contains 'actor') { [string]$t['actor'] }   else { '' }
+                        Screen    = if ($t.Keys -contains 'screen') { [string]$t['screen'] }  else { '' }
+                        Notes     = if ($t.Keys -contains 'notes') { [string]$t['notes'] }   else { '' }
+                        Condition = $cond
+                        Extras    = $extras
+                    })
+            }
+        }
+
+        $workflows.Add([pscustomobject]@{
+                Key           = [string]$wfKey
+                Description   = $wfDesc
+                States        = $statesMap
+                ColDefs       = $colDefs
+                Transitions   = $transList.ToArray()
+                HasConditions = $hasConditions
+            })
+    }
+
+    $result.Success = $true
+    $result.Actors = $actors
+    $result.Workflows = $workflows.ToArray()
+    return [pscustomobject]$result
+}
+
 function Parse-MarkdownFile {
     param(
         [string]$Path,
@@ -3940,6 +4872,388 @@ function Parse-MarkdownFile {
             continue
         }
 
+        # !include-json-table[path]
+        if ($trimmed -match '^!include-json-table\[([^\]]+)\]$') {
+            Flush-MdParagraph
+            $jsonRef = $matches[1].Trim()
+            $jsonResult = Invoke-JsonTableDirective -FilePath $jsonRef -BaseDirectory $fileDir
+            if ($jsonResult.Success) {
+                if ($null -ne $jsonResult.Metadata) {
+                    $metaDesc = $jsonResult.Metadata.Description
+                    if (-not [string]::IsNullOrWhiteSpace($metaDesc)) {
+                        $elements.Add((New-Element -Type 'paragraph' -Data @{
+                                    Text = [string]$metaDesc
+                                }))
+                    }
+                    $metaRules = $jsonResult.Metadata.Rules
+                    if ($null -ne $metaRules) {
+                        foreach ($rule in $metaRules) {
+                            $rt = [string]$rule
+                            if (-not [string]::IsNullOrWhiteSpace($rt)) {
+                                $elements.Add((New-Element -Type 'bullet' -Data @{
+                                            Text        = $rt
+                                            Level       = 1
+                                            MarkerCount = 1
+                                        }))
+                            }
+                        }
+                    }
+                }
+                $elements.Add((New-Element -Type 'table' -Data @{
+                            tableInfo  = $jsonResult.TableInfo
+                            Caption    = $pendingCaption
+                            Attributes = @{ 'options' = 'header' }
+                        }))
+            }
+            else {
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = (Get-JsonIncludeErrorText -ErrorCode $jsonResult.ErrorCode -FilePath $jsonRef)
+                            Caption = $null
+                        }))
+            }
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
+        # !include-json-tree[path]
+        if ($trimmed -match '^!include-json-tree\[([^\]]+)\]$') {
+            Flush-MdParagraph
+            $jsonRef = $matches[1].Trim()
+            $jsonResult = Invoke-JsonTreeDirective -FilePath $jsonRef -BaseDirectory $fileDir
+            if ($jsonResult.Success) {
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = $jsonResult.TreeText
+                            Caption = $pendingCaption
+                        }))
+            }
+            else {
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = (Get-JsonIncludeErrorText -ErrorCode $jsonResult.ErrorCode -FilePath $jsonRef)
+                            Caption = $null
+                        }))
+            }
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
+        # !include-json-config[path]
+        if ($trimmed -match '^!include-json-config\[([^\]]+)\]$') {
+            Flush-MdParagraph
+            $jsonRef = $matches[1].Trim()
+            $jsonResult = Invoke-JsonConfigDirective -FilePath $jsonRef -BaseDirectory $fileDir
+            if ($jsonResult.Success) {
+                if (-not [string]::IsNullOrWhiteSpace($jsonResult.Description)) {
+                    $elements.Add((New-Element -Type 'paragraph' -Data @{
+                                Text = [string]$jsonResult.Description
+                            }))
+                }
+                $configRules = $jsonResult.Rules
+                if ($null -ne $configRules) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{
+                                Level = 2
+                                Text  = '管理ルール'
+                            }))
+                    foreach ($rule in $configRules) {
+                        $rt = [string]$rule
+                        if (-not [string]::IsNullOrWhiteSpace($rt)) {
+                            $elements.Add((New-Element -Type 'bullet' -Data @{
+                                        Text        = $rt
+                                        Level       = 1
+                                        MarkerCount = 1
+                                    }))
+                        }
+                    }
+                }
+                foreach ($cat in $jsonResult.Categories) {
+                    $catHeading = if (-not [string]::IsNullOrWhiteSpace([string]$cat.Description)) {
+                        [string]$cat.Description
+                    }
+                    else {
+                        [string]$cat.Key
+                    }
+                    $elements.Add((New-Element -Type 'heading' -Data @{
+                                Level = 2
+                                Text  = $catHeading
+                            }))
+                    $catConstants = $cat.Constants
+                    if ($null -ne $catConstants -and $catConstants.Count -gt 0) {
+                        $rows = New-Object System.Collections.Generic.List[object]
+                        $headerCells = @(
+                            @{ Text = '定数名'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '値'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '説明'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+                        )
+                        $rows.Add($headerCells)
+                        foreach ($const in $catConstants) {
+                            $dataCells = @(
+                                @{ Text = [string]$const.Name; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$const.Value; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$const.Description; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+                            )
+                            $rows.Add($dataCells)
+                        }
+                        $configTableInfo = [pscustomobject]@{
+                            Rows       = $rows.ToArray()
+                            MaxColumns = 3
+                        }
+                        $elements.Add((New-Element -Type 'table' -Data @{
+                                    tableInfo  = $configTableInfo
+                                    Caption    = $null
+                                    Attributes = @{ 'options' = 'header' }
+                                }))
+                    }
+                }
+            }
+            else {
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = (Get-JsonIncludeErrorText -ErrorCode $jsonResult.ErrorCode -FilePath $jsonRef)
+                            Caption = $null
+                        }))
+            }
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
+        # !include-json-enum[path]
+        if ($trimmed -match '^!include-json-enum\[([^\]]+)\]$') {
+            Flush-MdParagraph
+            $jsonRef = $matches[1].Trim()
+            $jsonResult = Invoke-JsonEnumDirective -FilePath $jsonRef -BaseDirectory $fileDir
+            if ($jsonResult.Success) {
+                if (-not [string]::IsNullOrWhiteSpace($jsonResult.Description)) {
+                    $elements.Add((New-Element -Type 'paragraph' -Data @{
+                                Text = [string]$jsonResult.Description
+                            }))
+                }
+                $enumRules = $jsonResult.Rules
+                if ($null -ne $enumRules) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{
+                                Level = 2
+                                Text  = '管理ルール'
+                            }))
+                    foreach ($rule in $enumRules) {
+                        $rt = [string]$rule
+                        if (-not [string]::IsNullOrWhiteSpace($rt)) {
+                            $elements.Add((New-Element -Type 'bullet' -Data @{
+                                        Text        = $rt
+                                        Level       = 1
+                                        MarkerCount = 1
+                                    }))
+                        }
+                    }
+                }
+                foreach ($enumItem in $jsonResult.Enums) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{
+                                Level = 2
+                                Text  = [string]$enumItem.EnumName
+                            }))
+                    if (-not [string]::IsNullOrWhiteSpace([string]$enumItem.Description)) {
+                        $elements.Add((New-Element -Type 'paragraph' -Data @{
+                                    Text = [string]$enumItem.Description
+                                }))
+                    }
+                    if ($enumItem.HasValues) {
+                        $elements.Add((New-Element -Type 'table' -Data @{
+                                    tableInfo  = $enumItem.TableInfo
+                                    Caption    = $null
+                                    Attributes = @{ 'options' = 'header' }
+                                }))
+                    }
+                    else {
+                        $elements.Add((New-Element -Type 'paragraph' -Data @{
+                                    Text = '定義なし'
+                                }))
+                    }
+                }
+            }
+            else {
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = (Get-JsonIncludeErrorText -ErrorCode $jsonResult.ErrorCode -FilePath $jsonRef)
+                            Caption = $null
+                        }))
+            }
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
+        # !include-json-workflow[path]
+        if ($trimmed -match '^!include-json-workflow\[([^\]]+)\]$') {
+            Flush-MdParagraph
+            $jsonRef = $matches[1].Trim()
+            $jsonResult = Invoke-JsonWorkflowDirective -FilePath $jsonRef -BaseDirectory $fileDir
+            if ($jsonResult.Success) {
+                $wfActors = $jsonResult.Actors
+
+                if ($wfActors.Count -gt 0) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 1; Text = 'アクター一覧' }))
+                    $rows = New-Object System.Collections.Generic.List[object]
+                    $rows.Add(@(
+                            @{ Text = 'ロールID'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '名称'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+                        ))
+                    foreach ($rid in $wfActors.Keys) {
+                        $rows.Add(@(
+                                @{ Text = [string]$rid; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$wfActors[$rid]; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+                            ))
+                    }
+                    $elements.Add((New-Element -Type 'table' -Data @{
+                                tableInfo  = [pscustomobject]@{ Rows = $rows.ToArray(); MaxColumns = 2 }
+                                Caption    = $null
+                                Attributes = @{ 'options' = 'header' }
+                            }))
+                }
+
+                foreach ($wf in $jsonResult.Workflows) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 1; Text = [string]$wf.Key }))
+                    if (-not [string]::IsNullOrWhiteSpace([string]$wf.Description)) {
+                        $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = [string]$wf.Description }))
+                    }
+
+                    # States table
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = 'ステータス一覧' }))
+                    $stRows = New-Object System.Collections.Generic.List[object]
+                    $stRows.Add(@(
+                            @{ Text = 'ステータスID'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '名称'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '説明'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+                        ))
+                    foreach ($sid in $wf.States.Keys) {
+                        $s = $wf.States[$sid]
+                        $stRows.Add(@(
+                                @{ Text = [string]$sid; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$s.Label; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$s.Description; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+                            ))
+                    }
+                    $elements.Add((New-Element -Type 'table' -Data @{
+                                tableInfo  = [pscustomobject]@{ Rows = $stRows.ToArray(); MaxColumns = 3 }
+                                Caption    = $null
+                                Attributes = @{ 'options' = 'header' }
+                            }))
+
+                    # Transitions table
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = '状態遷移一覧' }))
+                    $tColKeys = @()
+                    $tColHdrs = @()
+                    foreach ($ck in $wf.ColDefs.Keys) { $tColKeys += [string]$ck; $tColHdrs += [string]$wf.ColDefs[$ck] }
+                    if ($wf.HasConditions) { $tColKeys += 'condition'; $tColHdrs += '条件' }
+
+                    $trRows = New-Object System.Collections.Generic.List[object]
+                    $hdr = @()
+                    for ($ci = 0; $ci -lt $tColKeys.Count; $ci++) {
+                        $hdr += @{ Text = $tColHdrs[$ci]; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+                    }
+                    $trRows.Add($hdr)
+
+                    foreach ($tr in $wf.Transitions) {
+                        $fromParts = @()
+                        foreach ($fv in $tr.FromList) {
+                            if ($fv -eq '[*]') { $fromParts += '[初期]' }
+                            elseif ($wf.States.Keys -contains $fv) { $fromParts += [string]$wf.States[$fv].Label }
+                            else { $fromParts += $fv }
+                        }
+                        $fromCell = $fromParts -join '\n'
+
+                        $toId = $tr.To
+                        $toCell = if ($toId -eq '[*]') { '[完了]' }
+                        elseif ($wf.States.Keys -contains $toId) { [string]$wf.States[$toId].Label }
+                        else { $toId }
+
+                        $aId = $tr.Actor
+                        $actorCell = if (-not [string]::IsNullOrWhiteSpace($aId) -and $wfActors.ContainsKey($aId)) {
+                            $wfActors[$aId]
+                        }
+                        else { $aId }
+
+                        $dCells = @()
+                        foreach ($ck in $tColKeys) {
+                            $cv = ''
+                            if ($ck -eq 'from') { $cv = $fromCell }
+                            elseif ($ck -eq 'to') { $cv = $toCell }
+                            elseif ($ck -eq 'actor') { $cv = $actorCell }
+                            elseif ($ck -eq 'trigger') { $cv = $tr.Trigger }
+                            elseif ($ck -eq 'screen') { $cv = $tr.Screen }
+                            elseif ($ck -eq 'notes') { $cv = $tr.Notes }
+                            elseif ($ck -eq 'condition') { $cv = if ($null -ne $tr.Condition) { $tr.Condition } else { '' } }
+                            else {
+                                if ($tr.Extras.Keys -contains $ck) { $cv = [string]$tr.Extras[$ck] }
+                            }
+                            $dCells += @{ Text = [string]$cv; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+                        }
+                        $trRows.Add($dCells)
+                    }
+
+                    $elements.Add((New-Element -Type 'table' -Data @{
+                                tableInfo  = [pscustomobject]@{ Rows = $trRows.ToArray(); MaxColumns = $tColKeys.Count }
+                                Caption    = $null
+                                Attributes = @{ 'options' = 'header' }
+                            }))
+
+                    # PlantUML state diagrams (render if PlantUML is configured; fall back to code block)
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = '状態遷移図' }))
+                    $pumlFull = Build-WorkflowPlantUml -Workflow $wf -Actors $wfActors -Filter $null
+                    $pumlOpts = @{ target = "wf-$($wf.Key)-all" }
+                    $pumlRender = Invoke-PlantUmlRender -PlantUmlSource $pumlFull -SourceFilePath $absolutePath `
+                        -Attributes $Attributes -Options $pumlOpts -Config $Config -Sequence 0
+                    if ($pumlRender.Success) {
+                        $elements.Add((New-Element -Type 'image' -Data @{
+                                    Path        = $pumlRender.ImagePath
+                                    Caption     = $null
+                                    GeneratedBy = 'plantuml'
+                                    Source      = $pumlFull
+                                }))
+                    }
+                    else {
+                        $elements.Add((New-Element -Type 'code' -Data @{ Text = $pumlFull; Caption = $null }))
+                    }
+
+                    if ($wf.HasConditions) {
+                        $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = '状態遷移図（前払い）' }))
+                        $pumlPre = Build-WorkflowPlantUml -Workflow $wf -Actors $wfActors -Filter 'PREPAID'
+                        $preOpts = @{ target = "wf-$($wf.Key)-prepaid" }
+                        $preRender = Invoke-PlantUmlRender -PlantUmlSource $pumlPre -SourceFilePath $absolutePath `
+                            -Attributes $Attributes -Options $preOpts -Config $Config -Sequence 0
+                        if ($preRender.Success) {
+                            $elements.Add((New-Element -Type 'image' -Data @{
+                                        Path = $preRender.ImagePath; Caption = $null; GeneratedBy = 'plantuml'; Source = $pumlPre
+                                    }))
+                        }
+                        else {
+                            $elements.Add((New-Element -Type 'code' -Data @{ Text = $pumlPre; Caption = $null }))
+                        }
+
+                        $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = '状態遷移図（後払い）' }))
+                        $pumlPost = Build-WorkflowPlantUml -Workflow $wf -Actors $wfActors -Filter 'POSTPAID'
+                        $postOpts = @{ target = "wf-$($wf.Key)-postpaid" }
+                        $postRender = Invoke-PlantUmlRender -PlantUmlSource $pumlPost -SourceFilePath $absolutePath `
+                            -Attributes $Attributes -Options $postOpts -Config $Config -Sequence 0
+                        if ($postRender.Success) {
+                            $elements.Add((New-Element -Type 'image' -Data @{
+                                        Path = $postRender.ImagePath; Caption = $null; GeneratedBy = 'plantuml'; Source = $pumlPost
+                                    }))
+                        }
+                        else {
+                            $elements.Add((New-Element -Type 'code' -Data @{ Text = $pumlPost; Caption = $null }))
+                        }
+                    }
+                }
+            }
+            else {
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = (Get-JsonIncludeErrorText -ErrorCode $jsonResult.ErrorCode -FilePath $jsonRef)
+                            Caption = $null
+                        }))
+            }
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
         # 単独画像行: ![alt](path)
         if ($trimmed -match '^!\[([^\]]*)\]\(([^\)]+)\)$') {
             Flush-MdParagraph
@@ -3973,6 +5287,8 @@ function Parse-MarkdownFile {
         Attributes = $Attributes
     }
 }
+
+if ($TestMode) { return }
 
 try {
     $configFullPath = Get-AbsolutePath -Path $ConfigFullPath
