@@ -3222,8 +3222,11 @@ function Build-WordDocument {
                         $headingText = $element.Text.Trim()
                     }
 
-                    $styleName = 'Heading' + [string]$level
-                    $styleConfig = $Config.Styles.$styleName
+                    $styleName = 'Heading' + [string]([Math]::Min($level, 4))
+                    $styleConfig = $null
+                    if ($Config.Styles.PSObject.Properties.Name -contains $styleName) {
+                        $styleConfig = $Config.Styles.$styleName
+                    }
                     if (-not $styleConfig) { $styleConfig = $Config.Styles.HeadingDefault }
 
                     Append-HeadingParagraph `
@@ -4583,6 +4586,27 @@ function Parse-MarkdownFile {
             else {
                 # ## → Level=1、### → Level=2 とAsciiDocの==、===に封対応; includeのオフセット適用
                 $elements.Add((New-Element -Type 'heading' -Data @{ Level = [Math]::Max(1, $level - 1 + $LevelOffset); Text = $headingText }))
+            }
+            $lineIndex++
+            continue
+        }
+
+        # アンカー定義: [[id]] または [#id]（AsciiDocモードと同じ構文。<<id>> / xref:id[] からの内部リンク参照先になる）
+        if ($trimmed -match '^\[\[([^\]]+)\]\]$') {
+            Flush-MdParagraph
+            $anchorId = [string]$matches[1]
+            if (-not [string]::IsNullOrWhiteSpace($anchorId)) {
+                $elements.Add((New-Element -Type 'anchor' -Data @{ Id = $anchorId.Trim() }))
+            }
+            $lineIndex++
+            continue
+        }
+
+        if ($trimmed -match '^\[#([^\]]+)\]$') {
+            Flush-MdParagraph
+            $anchorId = [string]$matches[1]
+            if (-not [string]::IsNullOrWhiteSpace($anchorId)) {
+                $elements.Add((New-Element -Type 'anchor' -Data @{ Id = $anchorId.Trim() }))
             }
             $lineIndex++
             continue
