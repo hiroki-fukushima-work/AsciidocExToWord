@@ -4537,9 +4537,11 @@ function Parse-MarkdownFile {
 
     $inFence = $false
     $fenceChar = $null
+    $fenceInfo = $null
     $fenceLines = New-Object System.Collections.Generic.List[string]
     $pendingCaption = $null
     $pendingMdTableOptions = $null
+    $plantUmlSequence = 1
 
     while ($lineIndex -lt $lines.Count) {
         $line = [string]$lines[$lineIndex]
@@ -4549,14 +4551,32 @@ function Parse-MarkdownFile {
         if ($inFence) {
             if ($trimmed -match "^$([regex]::Escape($fenceChar)){3,}\s*$") {
                 $blockText = ($fenceLines -join "`n")
-                $elements.Add((New-Element -Type 'code' -Data @{
-                            Text    = $blockText
-                            Caption = $pendingCaption
-                        }))
+                if ($fenceInfo -eq 'plantuml') {
+                    $render = Invoke-PlantUmlRender -PlantUmlSource $blockText -SourceFilePath $absolutePath -Attributes $Attributes -Options @{} -Config $Config -Sequence $plantUmlSequence
+                    $plantUmlSequence++
+                    if ($render.Success) {
+                        $elements.Add((New-Element -Type 'image' -Data @{ Path = $render.ImagePath; Caption = $pendingCaption; GeneratedBy = 'plantuml'; Source = $blockText }))
+                    }
+                    else {
+                        $fallback = "[PlantUML 画像生成失敗] $($render.ErrorMessage)"
+                        $elements.Add((New-Element -Type 'admonition' -Data @{ Kind = 'WARNING'; Text = $fallback }))
+                        $elements.Add((New-Element -Type 'code' -Data @{
+                                    Text    = $blockText
+                                    Caption = $pendingCaption
+                                }))
+                    }
+                }
+                else {
+                    $elements.Add((New-Element -Type 'code' -Data @{
+                                Text    = $blockText
+                                Caption = $pendingCaption
+                            }))
+                }
                 $pendingCaption = $null
                 $fenceLines.Clear()
                 $inFence = $false
                 $fenceChar = $null
+                $fenceInfo = $null
             }
             else {
                 $fenceLines.Add($line)
@@ -4640,9 +4660,11 @@ function Parse-MarkdownFile {
         }
 
         # フェンスコードブロック開始
-        if ($trimmed -match '^(`{3,}|~{3,})') {
+        if ($trimmed -match '^(`{3,}|~{3,})\s*([\w-]*)') {
             Flush-MdParagraph
             $fenceChar = $matches[1].Substring(0, 1)
+            $fenceInfo = ([string]$matches[2]).Trim().ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($fenceInfo)) { $fenceInfo = $null }
             $inFence = $true
             $fenceLines.Clear()
             $lineIndex++
