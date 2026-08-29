@@ -4623,6 +4623,8 @@ function Get-YamlConfigLeafRows {
 
     if ($Node -is [System.Collections.IDictionary]) {
         foreach ($key in $Node.Keys) {
+            # `_` で始まるキーは表示対象外（CloudFormation生成専用の詳細パラメータ等、設計書には出さない値）
+            if ([string]$key -like '_*') { continue }
             $childPath = if ([string]::IsNullOrEmpty($PathPrefix)) { [string]$key } else { "$PathPrefix / $key" }
             foreach ($r in (Get-YamlConfigLeafRows -Node $Node[$key] -PathPrefix $childPath)) { $rows.Add($r) }
         }
