@@ -15,7 +15,16 @@ Remove-Item $script:DebugLogPath -ErrorAction SilentlyContinue
 
 function Write-DebugLog {
     param([string]$Message)
-    Add-Content -LiteralPath $script:DebugLogPath -Value $Message -Encoding UTF8
+    # 直前の実行のログファイルハンドル解放待ちなどで一時的にロックされることがあるためリトライして無視する
+    for ($retry = 0; $retry -lt 3; $retry++) {
+        try {
+            Add-Content -LiteralPath $script:DebugLogPath -Value $Message -Encoding UTF8
+            return
+        }
+        catch {
+            Start-Sleep -Milliseconds 300
+        }
+    }
 }
 
 # 初期化
@@ -4264,6 +4273,209 @@ function Invoke-JsonEnumDirective {
     return [pscustomobject]$result
 }
 
+function Get-OssCategoryLabel {
+    param([string]$Key)
+    $map = @{ 'backend' = 'バックエンド'; 'frontend' = 'フロントエンド'; 'infrastructure' = 'インフラストラクチャ' }
+    if ($map.ContainsKey($Key)) { return $map[$Key] }
+    return $Key
+}
+
+function Get-OssListLabel {
+    param([string]$Key)
+    $map = @{
+        'directDependencies'            = '直接依存関係'
+        'notableTransitiveDependencies' = '推移的依存関係（主要）'
+        'dependencies'                  = '依存関係'
+        'devDependencies'               = '開発依存関係'
+        '__components__'                = '構成コンポーネント'
+    }
+    if ($map.ContainsKey($Key)) { return $map[$Key] }
+    return $Key
+}
+
+function Get-OssColumnHeaderLabel {
+    param([string]$Key)
+    $map = @{
+        'groupId'    = 'グループID'
+        'artifactId' = 'アーティファクトID'
+        'name'       = '名称'
+        'version'    = 'バージョン'
+        'license'    = 'ライセンス'
+        'note'       = '備考'
+        '_component' = '項目'
+    }
+    if ($map.ContainsKey($Key)) { return $map[$Key] }
+    return $Key
+}
+
+function Build-OssDependencyTable {
+    # 依存関係配列（groupId/artifactId/name/version/license/note等）の共通キーを検出し表化する
+    param([System.Object[]]$Items)
+
+    $priority = @('_component', 'groupId', 'artifactId', 'name', 'version', 'license', 'note')
+    $colOrder = New-Object System.Collections.Specialized.OrderedDictionary
+    foreach ($p in $priority) {
+        foreach ($item in $Items) {
+            if ($null -ne $item.PSObject.Properties[$p]) { $colOrder[$p] = $true; break }
+        }
+    }
+    foreach ($item in $Items) {
+        foreach ($prop in $item.PSObject.Properties) {
+            $n = [string]$prop.Name
+            if ($n.StartsWith('_') -and $n -ne '_component') { continue }
+            if (-not $colOrder.Contains($n)) { $colOrder[$n] = $true }
+        }
+    }
+    $columns = @($colOrder.Keys)
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    $headerCells = @()
+    foreach ($c in $columns) { $headerCells += @{ Text = (Get-OssColumnHeaderLabel -Key $c); RowSpan = 1; ColSpan = 1; IsHeader = $true } }
+    $rows.Add($headerCells)
+
+    foreach ($item in $Items) {
+        $cells = @()
+        foreach ($c in $columns) {
+            $prop = $item.PSObject.Properties[$c]
+            $v = if ($null -ne $prop) { $prop.Value } else { $null }
+            $text = if ($null -eq $v) { '' }
+            elseif ($v -is [bool]) { if ($v) { 'true' } else { 'false' } }
+            else { [string]$v }
+            $cells += @{ Text = $text; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+        }
+        $rows.Add($cells)
+    }
+
+    return [pscustomobject]@{ Rows = $rows.ToArray(); MaxColumns = $columns.Count }
+}
+
+function Invoke-OssInventoryDirective {
+    # oss-inventory.json専用: 依存関係配列・インフラ構成をJSONツリー表示ではなく表として展開する
+    param(
+        [string]$FilePath,
+        [string]$BaseDirectory
+    )
+
+    $result = @{
+        Success         = $false
+        ErrorCode       = $null
+        FilePath        = $FilePath
+        Description     = $null
+        Rules           = $null
+        GeneratedAt     = $null
+        ProjectVersion  = $null
+        Categories      = @()
+        UpdateProcedure = @()
+    }
+
+    $absPath = $null
+    try { $absPath = Get-AbsolutePath -Path $FilePath -BaseDirectory $BaseDirectory }
+    catch { $result.ErrorCode = 'File not found'; return [pscustomobject]$result }
+    if (-not (Test-Path -LiteralPath $absPath -PathType Leaf)) {
+        $result.ErrorCode = 'File not found'; return [pscustomobject]$result
+    }
+
+    $rawJson = $null
+    try { $rawJson = Get-Content -LiteralPath $absPath -Raw -Encoding UTF8 }
+    catch { $result.ErrorCode = 'File not found'; return [pscustomobject]$result }
+
+    if ([string]::IsNullOrWhiteSpace($rawJson)) {
+        $result.ErrorCode = 'Unsupported JSON structure'; return [pscustomobject]$result
+    }
+
+    $jsonData = $null
+    try { $jsonData = $rawJson | ConvertFrom-Json }
+    catch {
+        $lineInfo = ''
+        if ($_.Exception.Message -match '\((\d+)\):') {
+            $charPos = [int]$matches[1]
+            $before = if ($charPos -le $rawJson.Length) { $rawJson.Substring(0, $charPos) } else { $rawJson }
+            $lineNum = ($before -split "`n").Count
+            $lineInfo = " (line $lineNum)"
+        }
+        $result.ErrorCode = "Invalid JSON$lineInfo"; return [pscustomobject]$result
+    }
+
+    if ($jsonData -isnot [System.Management.Automation.PSCustomObject]) {
+        $result.ErrorCode = 'Unsupported JSON structure'; return [pscustomobject]$result
+    }
+
+    $reservedRoot = @('description', 'rules', 'generatedAt', 'projectVersion', 'updateProcedure')
+    $categories = New-Object System.Collections.Generic.List[object]
+
+    foreach ($prop in $jsonData.PSObject.Properties) {
+        $pname = [string]$prop.Name
+        $val = $prop.Value
+
+        if ($pname.StartsWith('_')) { continue }
+        if ($pname -eq 'description' -and $val -is [string]) { $result.Description = $val; continue }
+        if ($pname -eq 'rules') {
+            if ($val -is [System.Object[]]) { $result.Rules = $val }
+            elseif ($val -is [string]) { $result.Rules = @($val) }
+            continue
+        }
+        if ($pname -eq 'generatedAt') { $result.GeneratedAt = [string]$val; continue }
+        if ($pname -eq 'projectVersion') { $result.ProjectVersion = [string]$val; continue }
+        if ($reservedRoot -contains $pname) { continue }
+        if ($val -isnot [System.Management.Automation.PSCustomObject]) { continue }
+
+        $overviewRows = New-Object System.Collections.Generic.List[object]
+        $lists = New-Object System.Collections.Generic.List[object]
+        $components = New-Object System.Collections.Generic.List[object]
+
+        foreach ($cProp in $val.PSObject.Properties) {
+            $cname = [string]$cProp.Name
+            $cval = $cProp.Value
+            if ($cname.StartsWith('_')) { continue }
+
+            if ($cval -is [System.Object[]]) {
+                $items = @($cval | Where-Object { $_ -is [System.Management.Automation.PSCustomObject] })
+                if ($items.Count -gt 0) {
+                    $lists.Add([pscustomobject]@{ Key = $cname; TableInfo = (Build-OssDependencyTable -Items $items) })
+                }
+                continue
+            }
+            if ($cval -is [System.Management.Automation.PSCustomObject]) {
+                $clone = [ordered]@{ _component = $cname }
+                foreach ($sub in $cval.PSObject.Properties) {
+                    $sn = [string]$sub.Name
+                    if ($sn.StartsWith('_')) { continue }
+                    $clone[$sn] = $sub.Value
+                }
+                $components.Add([pscustomobject]$clone)
+                continue
+            }
+            if ($null -ne $cval) {
+                $valStr = if ($cval -is [bool]) { if ($cval) { 'true' } else { 'false' } } else { [string]$cval }
+                $overviewRows.Add([pscustomobject]@{ Key = $cname; Value = $valStr })
+            }
+        }
+
+        if ($components.Count -gt 0) {
+            $lists.Add([pscustomobject]@{ Key = '__components__'; TableInfo = (Build-OssDependencyTable -Items $components.ToArray()) })
+        }
+
+        $categories.Add([pscustomobject]@{
+                Key      = $pname
+                Overview = $overviewRows.ToArray()
+                Lists    = $lists.ToArray()
+            })
+    }
+
+    $updateProcedure = New-Object System.Collections.Generic.List[object]
+    $upProp = $jsonData.PSObject.Properties['updateProcedure']
+    if ($null -ne $upProp -and $upProp.Value -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($p in $upProp.Value.PSObject.Properties) {
+            $updateProcedure.Add([pscustomobject]@{ Key = [string]$p.Name; Command = [string]$p.Value })
+        }
+    }
+
+    $result.Success = $true
+    $result.Categories = $categories.ToArray()
+    $result.UpdateProcedure = $updateProcedure.ToArray()
+    return [pscustomobject]$result
+}
+
 function Build-WorkflowPlantUml {
     param(
         $Workflow,
@@ -4308,6 +4520,206 @@ function Build-WorkflowPlantUml {
     return $sb.ToString()
 }
 
+function Resolve-StateLabel {
+    # 状態ID以外（"－"「*」等の相互参照メタデータの説明文言や null）はそのまま返す
+    param($Value, $StatesMap)
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return '' }
+    $key = [string]$Value
+    if ($StatesMap.Keys -contains $key) { return [string]$StatesMap[$key].Label }
+    return $key
+}
+
+function Build-CombinedTransitionsTable {
+    # procurement_header_status / procurement_round_status の遷移を、各遷移が持つ
+    # roundFrom/roundTo/roundState（ヘッダー側）・headerFrom/headerTo/headerState（回次側）という
+    # 相互参照Extra項目（状態遷移図生成では未使用）を使って1つの対応表としてまとめる。
+    param($Workflows, $Actors)
+
+    $headerWf = $Workflows | Where-Object { $_.Key -eq 'procurement_header_status' } | Select-Object -First 1
+    $roundWf = $Workflows | Where-Object { $_.Key -eq 'procurement_round_status' } | Select-Object -First 1
+    if ($null -eq $headerWf -or $null -eq $roundWf) { return @() }
+
+    $rows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($tr in $headerWf.Transitions) {
+        $ownFrom = ($tr.FromList | ForEach-Object { if ($_ -eq '[*]') { '[初期]' } else { Resolve-StateLabel -Value $_ -StatesMap $headerWf.States } }) -join ' / '
+        $ownTo = if ($tr.To -eq '[*]') { '[完了]' } else { Resolve-StateLabel -Value $tr.To -StatesMap $headerWf.States }
+
+        if ($tr.Extras.Keys -contains 'roundFrom' -or $tr.Extras.Keys -contains 'roundTo') {
+            $otherFrom = Resolve-StateLabel -Value $tr.Extras['roundFrom'] -StatesMap $roundWf.States
+            if ([string]::IsNullOrWhiteSpace($otherFrom)) { $otherFrom = '－' }
+            $otherTo = Resolve-StateLabel -Value $tr.Extras['roundTo'] -StatesMap $roundWf.States
+            if ([string]::IsNullOrWhiteSpace($otherTo)) { $otherTo = '－' }
+        }
+        elseif ($tr.Extras.Keys -contains 'roundState') {
+            $otherFrom = [string]$tr.Extras['roundState']
+            $otherTo = $otherFrom
+        }
+        else {
+            $otherFrom = ''; $otherTo = ''
+        }
+
+        $actorCell = if (-not [string]::IsNullOrWhiteSpace($tr.Actor) -and $Actors.ContainsKey($tr.Actor)) { $Actors[$tr.Actor] } else { $tr.Actor }
+        $lockCell = if ($tr.Extras.Keys -contains 'lock') { [string]$tr.Extras['lock'] } else { '' }
+
+        $rows.Add([pscustomobject]@{
+                Origin     = 'ヘッダー'
+                HeaderFrom = $ownFrom
+                HeaderTo   = $ownTo
+                RoundFrom  = $otherFrom
+                RoundTo    = $otherTo
+                Trigger    = $tr.Trigger
+                Actor      = $actorCell
+                Screen     = $tr.Screen
+                Condition  = if ($null -ne $tr.Condition) { $tr.Condition } else { '' }
+                Lock       = $lockCell
+                Notes      = $tr.Notes
+            })
+    }
+
+    foreach ($tr in $roundWf.Transitions) {
+        $ownFrom = ($tr.FromList | ForEach-Object { if ($_ -eq '[*]') { '[初期]' } else { Resolve-StateLabel -Value $_ -StatesMap $roundWf.States } }) -join ' / '
+        $ownTo = if ($tr.To -eq '[*]') { '[完了]' } else { Resolve-StateLabel -Value $tr.To -StatesMap $roundWf.States }
+
+        if ($tr.Extras.Keys -contains 'headerFrom' -or $tr.Extras.Keys -contains 'headerTo') {
+            $otherFrom = Resolve-StateLabel -Value $tr.Extras['headerFrom'] -StatesMap $headerWf.States
+            if ([string]::IsNullOrWhiteSpace($otherFrom)) { $otherFrom = '－' }
+            $otherTo = Resolve-StateLabel -Value $tr.Extras['headerTo'] -StatesMap $headerWf.States
+            if ([string]::IsNullOrWhiteSpace($otherTo)) { $otherTo = '－' }
+        }
+        elseif ($tr.Extras.Keys -contains 'headerState') {
+            $otherFrom = [string]$tr.Extras['headerState']
+            $otherTo = $otherFrom
+        }
+        else {
+            $otherFrom = ''; $otherTo = ''
+        }
+
+        $actorCell = if (-not [string]::IsNullOrWhiteSpace($tr.Actor) -and $Actors.ContainsKey($tr.Actor)) { $Actors[$tr.Actor] } else { $tr.Actor }
+        $lockCell = if ($tr.Extras.Keys -contains 'lock') { [string]$tr.Extras['lock'] } else { '' }
+
+        $rows.Add([pscustomobject]@{
+                Origin     = '回次'
+                HeaderFrom = $otherFrom
+                HeaderTo   = $otherTo
+                RoundFrom  = $ownFrom
+                RoundTo    = $ownTo
+                Trigger    = $tr.Trigger
+                Actor      = $actorCell
+                Screen     = $tr.Screen
+                Condition  = if ($null -ne $tr.Condition) { $tr.Condition } else { '' }
+                Lock       = $lockCell
+                Notes      = $tr.Notes
+            })
+    }
+
+    return $rows.ToArray()
+}
+
+function Get-YamlConfigLeafRows {
+    param($Node, [string]$PathPrefix = '')
+
+    $rows = New-Object System.Collections.Generic.List[object]
+
+    if ($Node -is [System.Collections.IDictionary]) {
+        foreach ($key in $Node.Keys) {
+            $childPath = if ([string]::IsNullOrEmpty($PathPrefix)) { [string]$key } else { "$PathPrefix / $key" }
+            foreach ($r in (Get-YamlConfigLeafRows -Node $Node[$key] -PathPrefix $childPath)) { $rows.Add($r) }
+        }
+        return $rows.ToArray()
+    }
+
+    $valueText = ''
+    if ($Node -is [bool]) {
+        $valueText = if ($Node) { 'true' } else { 'false' }
+    }
+    elseif ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [string]) {
+        $parts = @()
+        foreach ($item in $Node) { $parts += [string]$item }
+        $valueText = $parts -join ', '
+    }
+    elseif ($null -ne $Node) {
+        $valueText = [string]$Node
+    }
+
+    $rows.Add([pscustomobject]@{ Path = $PathPrefix; Value = $valueText })
+    return $rows.ToArray()
+}
+
+function Invoke-YamlConfigDirective {
+    param(
+        [string]$FilePath,
+        [string]$BaseDirectory
+    )
+
+    $result = @{
+        Success   = $false
+        ErrorCode = $null
+        FilePath  = $FilePath
+        Groups    = @()
+    }
+
+    if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+        try { Import-Module powershell-yaml -ErrorAction Stop }
+        catch {
+            $result.ErrorCode = 'YAML module required. Run: Install-Module powershell-yaml'
+            return [pscustomobject]$result
+        }
+    }
+
+    $absPath = $null
+    try { $absPath = Get-AbsolutePath -Path $FilePath -BaseDirectory $BaseDirectory }
+    catch { $result.ErrorCode = 'File not found'; return [pscustomobject]$result }
+    if (-not (Test-Path -LiteralPath $absPath -PathType Leaf)) {
+        $result.ErrorCode = 'File not found'; return [pscustomobject]$result
+    }
+
+    $rawContent = $null
+    try { $rawContent = Get-Content -LiteralPath $absPath -Raw -Encoding UTF8 }
+    catch { $result.ErrorCode = 'File not found'; return [pscustomobject]$result }
+
+    $yaml = $null
+    try { $yaml = $rawContent | ConvertFrom-Yaml }
+    catch { $result.ErrorCode = "Invalid YAML: $($_.Exception.Message)"; return [pscustomobject]$result }
+
+    if ($null -eq $yaml -or $yaml -isnot [System.Collections.IDictionary]) {
+        $result.ErrorCode = 'Unsupported YAML structure'; return [pscustomobject]$result
+    }
+
+    $groups = New-Object System.Collections.Generic.List[object]
+    foreach ($groupKey in $yaml.Keys) {
+        $groupNode = $yaml[$groupKey]
+        $groupLabel = [string]$groupKey
+        $groupDesc = $null
+        $dataNode = $groupNode
+
+        # _label/_description は表示用の予約キー（他のJSONディレクティブの `_description` 慣例と揃える）
+        if ($groupNode -is [System.Collections.IDictionary]) {
+            if ($groupNode.Contains('_label') -and -not [string]::IsNullOrWhiteSpace([string]$groupNode['_label'])) {
+                $groupLabel = [string]$groupNode['_label']
+            }
+            if ($groupNode.Contains('_description') -and -not [string]::IsNullOrWhiteSpace([string]$groupNode['_description'])) {
+                $groupDesc = [string]$groupNode['_description']
+            }
+            $dataNode = New-Object System.Collections.Specialized.OrderedDictionary
+            foreach ($k in $groupNode.Keys) {
+                if ($k -eq '_label' -or $k -eq '_description') { continue }
+                $dataNode[$k] = $groupNode[$k]
+            }
+        }
+
+        $groups.Add([pscustomobject]@{
+                Key         = $groupLabel
+                Description = $groupDesc
+                Rows        = @(Get-YamlConfigLeafRows -Node $dataNode)
+            })
+    }
+
+    $result.Success = $true
+    $result.Groups = $groups.ToArray()
+    return [pscustomobject]$result
+}
+
 function Invoke-JsonWorkflowDirective {
     param(
         [string]$FilePath,
@@ -4342,7 +4754,7 @@ function Invoke-JsonWorkflowDirective {
     catch { $result.ErrorCode = 'File not found'; return [pscustomobject]$result }
 
     $yaml = $null
-    try { $yaml = $rawContent | ConvertFrom-Yaml }
+    try { $yaml = $rawContent | ConvertFrom-Yaml -Ordered }
     catch { $result.ErrorCode = "Invalid YAML: $($_.Exception.Message)"; return [pscustomobject]$result }
 
     if ($null -eq $yaml -or $yaml -isnot [System.Collections.IDictionary]) {
@@ -4374,6 +4786,7 @@ function Invoke-JsonWorkflowDirective {
         if ($null -eq $wf -or $wf -isnot [System.Collections.IDictionary]) { continue }
 
         $wfDesc = if ($wf.Keys -contains 'description') { [string]$wf['description'] } else { $null }
+        $wfLabel = if ($wf.Keys -contains 'label') { [string]$wf['label'] } else { $null }
 
         # States
         $statesMap = [ordered]@{}
@@ -4443,6 +4856,7 @@ function Invoke-JsonWorkflowDirective {
 
         $workflows.Add([pscustomobject]@{
                 Key           = [string]$wfKey
+                Label         = $wfLabel
                 Description   = $wfDesc
                 States        = $statesMap
                 ColDefs       = $colDefs
@@ -4984,7 +5398,72 @@ function Parse-MarkdownFile {
             continue
         }
 
-        # !include-json-config[path]
+        # !include-oss-inventory[path] — oss-inventory.json専用。依存関係一覧をJSONツリーではなく表として展開する
+        if ($trimmed -match '^!include-oss-inventory\[([^\]]+)\]$') {
+            Flush-MdParagraph
+            $ossRef = $matches[1].Trim()
+            $ossResult = Invoke-OssInventoryDirective -FilePath $ossRef -BaseDirectory $fileDir
+            if ($ossResult.Success) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$ossResult.Description)) {
+                    $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = [string]$ossResult.Description }))
+                }
+                if (-not [string]::IsNullOrWhiteSpace([string]$ossResult.GeneratedAt) -or -not [string]::IsNullOrWhiteSpace([string]$ossResult.ProjectVersion)) {
+                    $infoParts = @()
+                    if (-not [string]::IsNullOrWhiteSpace([string]$ossResult.GeneratedAt)) { $infoParts += "更新日: $([string]$ossResult.GeneratedAt)" }
+                    if (-not [string]::IsNullOrWhiteSpace([string]$ossResult.ProjectVersion)) { $infoParts += "プロジェクトバージョン: $([string]$ossResult.ProjectVersion)" }
+                    $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = ($infoParts -join ' / ') }))
+                }
+                if ($null -ne $ossResult.Rules) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (2 + $LevelOffset); Text = '管理ルール' }))
+                    foreach ($rule in $ossResult.Rules) {
+                        $rt = [string]$rule
+                        if (-not [string]::IsNullOrWhiteSpace($rt)) {
+                            $elements.Add((New-Element -Type 'bullet' -Data @{ Text = $rt; Level = 1; MarkerCount = 1 }))
+                        }
+                    }
+                }
+                foreach ($cat in $ossResult.Categories) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (2 + $LevelOffset); Text = (Get-OssCategoryLabel -Key ([string]$cat.Key)) }))
+                    if ($cat.Overview.Count -gt 0) {
+                        $ovRows = New-Object System.Collections.Generic.List[object]
+                        $ovRows.Add(@(
+                                @{ Text = '項目'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                                @{ Text = '値'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+                            ))
+                        foreach ($ov in $cat.Overview) {
+                            $ovRows.Add(@(
+                                    @{ Text = [string]$ov.Key; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                    @{ Text = [string]$ov.Value; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+                                ))
+                        }
+                        $elements.Add((New-Element -Type 'table' -Data @{
+                                    tableInfo  = [pscustomobject]@{ Rows = $ovRows.ToArray(); MaxColumns = 2 }
+                                    Caption    = $null
+                                    Attributes = @{ 'options' = 'header' }
+                                }))
+                    }
+                    foreach ($lst in $cat.Lists) {
+                        $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = (Get-OssListLabel -Key ([string]$lst.Key)) }))
+                        $elements.Add((New-Element -Type 'table' -Data @{
+                                    tableInfo  = $lst.TableInfo
+                                    Caption    = $null
+                                    Attributes = @{ 'options' = 'header' }
+                                }))
+                    }
+                }
+                # 更新手順(updateProcedure)は運用手順であり設計情報ではないため設計書には出力しない
+            }
+            else {
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = (Get-JsonIncludeErrorText -ErrorCode $ossResult.ErrorCode -FilePath $ossRef)
+                            Caption = $null
+                        }))
+            }
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
         if ($trimmed -match '^!include-json-config\[([^\]]+)\]$') {
             Flush-MdParagraph
             $jsonRef = $matches[1].Trim()
@@ -4998,7 +5477,7 @@ function Parse-MarkdownFile {
                 $configRules = $jsonResult.Rules
                 if ($null -ne $configRules) {
                     $elements.Add((New-Element -Type 'heading' -Data @{
-                                Level = 2
+                                Level = (2 + $LevelOffset)
                                 Text  = '管理ルール'
                             }))
                     foreach ($rule in $configRules) {
@@ -5020,7 +5499,7 @@ function Parse-MarkdownFile {
                         [string]$cat.Key
                     }
                     $elements.Add((New-Element -Type 'heading' -Data @{
-                                Level = 2
+                                Level = (2 + $LevelOffset)
                                 Text  = $catHeading
                             }))
                     $catConstants = $cat.Constants
@@ -5077,7 +5556,7 @@ function Parse-MarkdownFile {
                 $enumRules = $jsonResult.Rules
                 if ($null -ne $enumRules) {
                     $elements.Add((New-Element -Type 'heading' -Data @{
-                                Level = 2
+                                Level = (2 + $LevelOffset)
                                 Text  = '管理ルール'
                             }))
                     foreach ($rule in $enumRules) {
@@ -5092,13 +5571,15 @@ function Parse-MarkdownFile {
                     }
                 }
                 foreach ($enumItem in $jsonResult.Enums) {
+                    $hasDesc = -not [string]::IsNullOrWhiteSpace([string]$enumItem.Description)
+                    $enumHeadingText = if ($hasDesc) { [string]$enumItem.Description } else { [string]$enumItem.EnumName }
                     $elements.Add((New-Element -Type 'heading' -Data @{
-                                Level = 2
-                                Text  = [string]$enumItem.EnumName
+                                Level = (2 + $LevelOffset)
+                                Text  = $enumHeadingText
                             }))
-                    if (-not [string]::IsNullOrWhiteSpace([string]$enumItem.Description)) {
+                    if ($hasDesc) {
                         $elements.Add((New-Element -Type 'paragraph' -Data @{
-                                    Text = [string]$enumItem.Description
+                                    Text = "列挙型ID: $([string]$enumItem.EnumName)"
                                 }))
                     }
                     if ($enumItem.HasValues) {
@@ -5126,6 +5607,48 @@ function Parse-MarkdownFile {
             continue
         }
 
+        # !include-yaml-config[path] — 階層の浅いYAML（system-config.yaml等）をグループごとの表に変換
+        if ($trimmed -match '^!include-yaml-config\[([^\]]+)\]$') {
+            Flush-MdParagraph
+            $yamlRef = $matches[1].Trim()
+            $yamlResult = Invoke-YamlConfigDirective -FilePath $yamlRef -BaseDirectory $fileDir
+            if ($yamlResult.Success) {
+                foreach ($grp in $yamlResult.Groups) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (2 + $LevelOffset); Text = $grp.Key }))
+                    if (-not [string]::IsNullOrWhiteSpace([string]$grp.Description)) {
+                        $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = [string]$grp.Description }))
+                    }
+                    if ($grp.Rows.Count -gt 0) {
+                        $cfgRows = New-Object System.Collections.Generic.List[object]
+                        $cfgRows.Add(@(
+                                @{ Text = '項目'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                                @{ Text = '値'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+                            ))
+                        foreach ($row in $grp.Rows) {
+                            $cfgRows.Add(@(
+                                    @{ Text = [string]$row.Path; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                    @{ Text = [string]$row.Value; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+                                ))
+                        }
+                        $elements.Add((New-Element -Type 'table' -Data @{
+                                    tableInfo  = [pscustomobject]@{ Rows = $cfgRows.ToArray(); MaxColumns = 2 }
+                                    Caption    = $null
+                                    Attributes = @{ 'options' = 'header' }
+                                }))
+                    }
+                }
+            }
+            else {
+                $elements.Add((New-Element -Type 'code' -Data @{
+                            Text    = (Get-JsonIncludeErrorText -ErrorCode $yamlResult.ErrorCode -FilePath $yamlRef)
+                            Caption = $null
+                        }))
+            }
+            $pendingCaption = $null
+            $lineIndex++
+            continue
+        }
+
         # !include-json-workflow[path]
         if ($trimmed -match '^!include-json-workflow\[([^\]]+)\]$') {
             Flush-MdParagraph
@@ -5135,7 +5658,7 @@ function Parse-MarkdownFile {
                 $wfActors = $jsonResult.Actors
 
                 if ($wfActors.Count -gt 0) {
-                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 1; Text = 'アクター一覧' }))
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (2 + $LevelOffset); Text = 'アクター一覧' }))
                     $rows = New-Object System.Collections.Generic.List[object]
                     $rows.Add(@(
                             @{ Text = 'ロールID'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
@@ -5155,13 +5678,14 @@ function Parse-MarkdownFile {
                 }
 
                 foreach ($wf in $jsonResult.Workflows) {
-                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 1; Text = [string]$wf.Key }))
+                    $wfHeadingText = if (-not [string]::IsNullOrWhiteSpace([string]$wf.Label)) { [string]$wf.Label } else { [string]$wf.Key }
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (2 + $LevelOffset); Text = $wfHeadingText }))
                     if (-not [string]::IsNullOrWhiteSpace([string]$wf.Description)) {
                         $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = [string]$wf.Description }))
                     }
 
                     # States table
-                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = 'ステータス一覧' }))
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = 'ステータス一覧' }))
                     $stRows = New-Object System.Collections.Generic.List[object]
                     $stRows.Add(@(
                             @{ Text = 'ステータスID'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
@@ -5183,11 +5707,18 @@ function Parse-MarkdownFile {
                             }))
 
                     # Transitions table
-                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = '状態遷移一覧' }))
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = '状態遷移一覧' }))
                     $tColKeys = @()
                     $tColHdrs = @()
-                    foreach ($ck in $wf.ColDefs.Keys) { $tColKeys += [string]$ck; $tColHdrs += [string]$wf.ColDefs[$ck] }
-                    if ($wf.HasConditions) { $tColKeys += 'condition'; $tColHdrs += '条件' }
+                    # 条件列は「操作」列の直後に挿入する（条件は操作の付帯情報のため）
+                    foreach ($ck in $wf.ColDefs.Keys) {
+                        $tColKeys += [string]$ck
+                        $tColHdrs += [string]$wf.ColDefs[$ck]
+                        if ($wf.HasConditions -and [string]$ck -eq 'trigger') {
+                            $tColKeys += 'condition'
+                            $tColHdrs += '条件'
+                        }
+                    }
 
                     $trRows = New-Object System.Collections.Generic.List[object]
                     $hdr = @()
@@ -5241,7 +5772,9 @@ function Parse-MarkdownFile {
                             }))
 
                     # PlantUML state diagrams (render if PlantUML is configured; fall back to code block)
-                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = '状態遷移図' }))
+                    # 見出しに対象ワークフロー名を含め、複数ワークフローが並ぶ文書内でも「何の状態遷移図か」が分かるようにする
+                    $wfDiagramTitle = "$wfHeadingText 状態遷移図"
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = $wfDiagramTitle }))
                     $pumlFull = Build-WorkflowPlantUml -Workflow $wf -Actors $wfActors -Filter $null
                     $pumlOpts = @{ target = "wf-$($wf.Key)-all" }
                     $pumlRender = Invoke-PlantUmlRender -PlantUmlSource $pumlFull -SourceFilePath $absolutePath `
@@ -5259,7 +5792,7 @@ function Parse-MarkdownFile {
                     }
 
                     if ($wf.HasConditions) {
-                        $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = '状態遷移図（前払い）' }))
+                        $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = "$wfDiagramTitle（前払い）" }))
                         $pumlPre = Build-WorkflowPlantUml -Workflow $wf -Actors $wfActors -Filter 'PREPAID'
                         $preOpts = @{ target = "wf-$($wf.Key)-prepaid" }
                         $preRender = Invoke-PlantUmlRender -PlantUmlSource $pumlPre -SourceFilePath $absolutePath `
@@ -5273,7 +5806,7 @@ function Parse-MarkdownFile {
                             $elements.Add((New-Element -Type 'code' -Data @{ Text = $pumlPre; Caption = $null }))
                         }
 
-                        $elements.Add((New-Element -Type 'heading' -Data @{ Level = 2; Text = '状態遷移図（後払い）' }))
+                        $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = "$wfDiagramTitle（後払い）" }))
                         $pumlPost = Build-WorkflowPlantUml -Workflow $wf -Actors $wfActors -Filter 'POSTPAID'
                         $postOpts = @{ target = "wf-$($wf.Key)-postpaid" }
                         $postRender = Invoke-PlantUmlRender -PlantUmlSource $pumlPost -SourceFilePath $absolutePath `
@@ -5287,6 +5820,48 @@ function Parse-MarkdownFile {
                             $elements.Add((New-Element -Type 'code' -Data @{ Text = $pumlPost; Caption = $null }))
                         }
                     }
+                }
+
+                # ヘッダー・回次 対応表（procurement_header_status / procurement_round_status がある場合のみ）
+                $combinedRows = Build-CombinedTransitionsTable -Workflows $jsonResult.Workflows -Actors $wfActors
+                if ($null -ne $combinedRows -and $combinedRows.Count -gt 0) {
+                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (2 + $LevelOffset); Text = 'ヘッダー・回次 対応表' }))
+                    $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = '調達ヘッダーステータスと回次ステータスの遷移を1つの表に並べ、相互の対応関係を示す。' }))
+
+                    $cmbRows = New-Object System.Collections.Generic.List[object]
+                    $cmbRows.Add(@(
+                            @{ Text = '起点'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = 'ヘッダー状態(from)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = 'ヘッダー状態(to)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '回次状態(from)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '回次状態(to)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '操作'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '実行ロール'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '画面'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '条件'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = 'ロック要否'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '備考'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
+                        ))
+                    foreach ($r in $combinedRows) {
+                        $cmbRows.Add(@(
+                                @{ Text = [string]$r.Origin; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.HeaderFrom; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.HeaderTo; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.RoundFrom; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.RoundTo; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.Trigger; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.Actor; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.Screen; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.Condition; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.Lock; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.Notes; RowSpan = 1; ColSpan = 1; IsHeader = $false }
+                            ))
+                    }
+                    $elements.Add((New-Element -Type 'table' -Data @{
+                                tableInfo  = [pscustomobject]@{ Rows = $cmbRows.ToArray(); MaxColumns = 11 }
+                                Caption    = $null
+                                Attributes = @{ 'options' = 'header' }
+                            }))
                 }
             }
             else {
@@ -5384,6 +5959,19 @@ try {
             Build-WordDocument -Parsed $parsed -Config $config -OutputFullPath $outputFullPath
             $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
             Write-Output "$TIMESTAMP 変換完了: $outputFullPath"
+
+            # 添付ファイル（chapters/excel 等、Word本文に埋め込まない別紙）を出力先へコピーする
+            $attachSubdir = 'excel'
+            if ($config.Document -and $config.Document.PSObject.Properties.Name -contains 'AttachmentsSubdir' -and $config.Document.AttachmentsSubdir) {
+                $attachSubdir = [string]$config.Document.AttachmentsSubdir
+            }
+            $attachSourceDir = Join-Path (Join-Path $sourceDir 'chapters') $attachSubdir
+            if (Test-Path -LiteralPath $attachSourceDir -PathType Container) {
+                $attachTargetDir = Join-Path $targetDir $attachSubdir
+                [void](New-Item -ItemType Directory -Path $attachTargetDir -Force -ErrorAction SilentlyContinue)
+                Copy-Item -Path (Join-Path $attachSourceDir '*') -Destination $attachTargetDir -Recurse -Force
+                Write-Output "添付ファイルをコピーしました: $attachSourceDir -> $attachTargetDir"
+            }
         }
         catch {
             Write-Output "エラー [$inputFullPath]: $($_.Exception.Message)"

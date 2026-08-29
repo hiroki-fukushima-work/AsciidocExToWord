@@ -58,7 +58,7 @@
     "MaxWidthMm": 160
   },
   "Markdown": {
-    "ShowIncludeSource": true,
+    "ShowIncludeSource": false,
     "IncludeSourceStyle": {
       "FontName": "游ゴシック",
       "Size": 9,
@@ -98,7 +98,7 @@
       "Alignment": "right",
       "SpaceAfter": 6,
       "LineSpacingRule": "Exactly",
-      "LineSpacing": 10 
+      "LineSpacing": 10
     },
     "Revision": {
       "FontName": "游ゴシック",
