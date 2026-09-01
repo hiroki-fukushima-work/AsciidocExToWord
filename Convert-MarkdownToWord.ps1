@@ -5728,12 +5728,15 @@ function Parse-MarkdownFile {
 
                     $trRows = New-Object System.Collections.Generic.List[object]
                     $hdr = @()
+                    $hdr += @{ Text = '＃'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
                     for ($ci = 0; $ci -lt $tColKeys.Count; $ci++) {
                         $hdr += @{ Text = $tColHdrs[$ci]; RowSpan = 1; ColSpan = 1; IsHeader = $true }
                     }
                     $trRows.Add($hdr)
 
+                    $trRowNo = 0
                     foreach ($tr in $wf.Transitions) {
+                        $trRowNo++
                         $fromParts = @()
                         foreach ($fv in $tr.FromList) {
                             if ($fv -eq '[*]') { $fromParts += '[初期]' }
@@ -5754,6 +5757,7 @@ function Parse-MarkdownFile {
                         else { $aId }
 
                         $dCells = @()
+                        $dCells += @{ Text = [string]$trRowNo; RowSpan = 1; ColSpan = 1; IsHeader = $false }
                         foreach ($ck in $tColKeys) {
                             $cv = ''
                             if ($ck -eq 'from') { $cv = $fromCell }
@@ -5774,7 +5778,7 @@ function Parse-MarkdownFile {
                     }
 
                     $elements.Add((New-Element -Type 'table' -Data @{
-                                tableInfo  = [pscustomobject]@{ Rows = $trRows.ToArray(); MaxColumns = $tColKeys.Count }
+                                tableInfo  = [pscustomobject]@{ Rows = $trRows.ToArray(); MaxColumns = ($tColKeys.Count + 1) }
                                 Caption    = $null
                                 Attributes = @{ 'options' = 'header' }
                             }))
@@ -5829,52 +5833,7 @@ function Parse-MarkdownFile {
                         }
                     }
                 }
-
-                # ヘッダー・回次 対応表（procurement_header_status / procurement_round_status がある場合のみ）
-                $combinedRows = Build-CombinedTransitionsTable -Workflows $jsonResult.Workflows -Actors $wfActors
-                if ($null -ne $combinedRows -and $combinedRows.Count -gt 0) {
-                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (2 + $LevelOffset); Text = 'ヘッダー・回次 対応表' }))
-                    $elements.Add((New-Element -Type 'paragraph' -Data @{ Text = '調達ヘッダーステータスと回次ステータスの遷移を1つの表に並べ、相互の対応関係を示す。' }))
-
-                    $cmbRows = New-Object System.Collections.Generic.List[object]
-                    $cmbRows.Add(@(
-                            @{ Text = '起点'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = 'ヘッダー状態(from)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = 'ヘッダー状態(to)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '回次状態(from)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '回次状態(to)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '開始画面'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '開始操作'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '終了画面'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '終了操作'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '実行ロール'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '条件'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = 'ロック要否'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '備考'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
-                        ))
-                    foreach ($r in $combinedRows) {
-                        $cmbRows.Add(@(
-                                @{ Text = [string]$r.Origin; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.HeaderFrom; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.HeaderTo; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.RoundFrom; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.RoundTo; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.StartScreen; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.StartTrigger; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.EndScreen; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.EndTrigger; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.Actor; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.Condition; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.Lock; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.Notes; RowSpan = 1; ColSpan = 1; IsHeader = $false }
-                            ))
-                    }
-                    $elements.Add((New-Element -Type 'table' -Data @{
-                                tableInfo  = [pscustomobject]@{ Rows = $cmbRows.ToArray(); MaxColumns = 13 }
-                                Caption    = $null
-                                Attributes = @{ 'options' = 'header' }
-                            }))
-                }
+                # 「ヘッダー・回次 対応表」は各ワークフロー単体の状態遷移一覧表と列構成を揃えたため廃止（Build-CombinedTransitionsTable は未使用として残置）
             }
             else {
                 $elements.Add((New-Element -Type 'code' -Data @{
