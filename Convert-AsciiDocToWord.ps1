@@ -4506,7 +4506,9 @@ function Build-WorkflowPlantUml {
         }
         else { $t.Actor }
 
-        $label = "$($t.Trigger)\n$actorLabel"
+        # 開始操作がある場合のみ「開始操作→終了操作」、単独操作で完結する場合は終了操作のみ表示する
+        $triggerLabel = if (-not [string]::IsNullOrWhiteSpace($t.StartTrigger)) { "$($t.StartTrigger)→$($t.EndTrigger)" } else { $t.EndTrigger }
+        $label = "$triggerLabel\n$actorLabel"
         if (-not [string]::IsNullOrWhiteSpace($cond)) { $label += "\n[$cond]" }
 
         foreach ($fromVal in $t.FromList) {
@@ -4563,17 +4565,19 @@ function Build-CombinedTransitionsTable {
         $lockCell = if ($tr.Extras.Keys -contains 'lock') { [string]$tr.Extras['lock'] } else { '' }
 
         $rows.Add([pscustomobject]@{
-                Origin     = 'ヘッダー'
-                HeaderFrom = $ownFrom
-                HeaderTo   = $ownTo
-                RoundFrom  = $otherFrom
-                RoundTo    = $otherTo
-                Trigger    = $tr.Trigger
-                Actor      = $actorCell
-                Screen     = $tr.Screen
-                Condition  = if ($null -ne $tr.Condition) { $tr.Condition } else { '' }
-                Lock       = $lockCell
-                Notes      = $tr.Notes
+                Origin       = 'ヘッダー'
+                HeaderFrom   = $ownFrom
+                HeaderTo     = $ownTo
+                RoundFrom    = $otherFrom
+                RoundTo      = $otherTo
+                StartScreen  = $tr.StartScreen
+                StartTrigger = $tr.StartTrigger
+                EndScreen    = $tr.EndScreen
+                EndTrigger   = $tr.EndTrigger
+                Actor        = $actorCell
+                Condition    = if ($null -ne $tr.Condition) { $tr.Condition } else { '' }
+                Lock         = $lockCell
+                Notes        = $tr.Notes
             })
     }
 
@@ -4599,17 +4603,19 @@ function Build-CombinedTransitionsTable {
         $lockCell = if ($tr.Extras.Keys -contains 'lock') { [string]$tr.Extras['lock'] } else { '' }
 
         $rows.Add([pscustomobject]@{
-                Origin     = '回次'
-                HeaderFrom = $otherFrom
-                HeaderTo   = $otherTo
-                RoundFrom  = $ownFrom
-                RoundTo    = $ownTo
-                Trigger    = $tr.Trigger
-                Actor      = $actorCell
-                Screen     = $tr.Screen
-                Condition  = if ($null -ne $tr.Condition) { $tr.Condition } else { '' }
-                Lock       = $lockCell
-                Notes      = $tr.Notes
+                Origin       = '回次'
+                HeaderFrom   = $otherFrom
+                HeaderTo     = $otherTo
+                RoundFrom    = $ownFrom
+                RoundTo      = $ownTo
+                StartScreen  = $tr.StartScreen
+                StartTrigger = $tr.StartTrigger
+                EndScreen    = $tr.EndScreen
+                EndTrigger   = $tr.EndTrigger
+                Actor        = $actorCell
+                Condition    = if ($null -ne $tr.Condition) { $tr.Condition } else { '' }
+                Lock         = $lockCell
+                Notes        = $tr.Notes
             })
     }
 
@@ -4837,21 +4843,23 @@ function Invoke-JsonWorkflowDirective {
                 $cond = if ($t.Keys -contains 'condition') { [string]$t['condition'] } else { $null }
                 if (-not [string]::IsNullOrWhiteSpace($cond)) { $hasConditions = $true }
 
-                $std = @('from', 'to', 'trigger', 'actor', 'screen', 'notes', 'condition')
+                $std = @('from', 'to', 'startTrigger', 'endTrigger', 'actor', 'startScreen', 'endScreen', 'notes', 'condition')
                 $extras = @{}
                 foreach ($ek in $t.Keys) {
                     if ($std -notcontains [string]$ek) { $extras[[string]$ek] = [string]$t[$ek] }
                 }
 
                 $transList.Add([pscustomobject]@{
-                        FromList  = $fromList
-                        To        = $toVal
-                        Trigger   = if ($t.Keys -contains 'trigger') { [string]$t['trigger'] } else { '' }
-                        Actor     = if ($t.Keys -contains 'actor') { [string]$t['actor'] }   else { '' }
-                        Screen    = if ($t.Keys -contains 'screen') { [string]$t['screen'] }  else { '' }
-                        Notes     = if ($t.Keys -contains 'notes') { [string]$t['notes'] }   else { '' }
-                        Condition = $cond
-                        Extras    = $extras
+                        FromList     = $fromList
+                        To           = $toVal
+                        StartTrigger = if ($t.Keys -contains 'startTrigger') { [string]$t['startTrigger'] } else { '' }
+                        EndTrigger   = if ($t.Keys -contains 'endTrigger') { [string]$t['endTrigger'] }   else { '' }
+                        Actor        = if ($t.Keys -contains 'actor') { [string]$t['actor'] }   else { '' }
+                        StartScreen  = if ($t.Keys -contains 'startScreen') { [string]$t['startScreen'] } else { '' }
+                        EndScreen    = if ($t.Keys -contains 'endScreen') { [string]$t['endScreen'] }   else { '' }
+                        Notes        = if ($t.Keys -contains 'notes') { [string]$t['notes'] }   else { '' }
+                        Condition    = $cond
+                        Extras       = $extras
                     })
             }
         }
@@ -5710,16 +5718,12 @@ function Parse-MarkdownFile {
 
                     # Transitions table
                     $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = '状態遷移一覧' }))
+                    # 状態遷移一覧テーブルの列は wf.ColDefs（YAML transitionColumns）の宣言順・宣言内容をそのまま採用する
                     $tColKeys = @()
                     $tColHdrs = @()
-                    # 条件列は「操作」列の直後に挿入する（条件は操作の付帯情報のため）
                     foreach ($ck in $wf.ColDefs.Keys) {
                         $tColKeys += [string]$ck
                         $tColHdrs += [string]$wf.ColDefs[$ck]
-                        if ($wf.HasConditions -and [string]$ck -eq 'trigger') {
-                            $tColKeys += 'condition'
-                            $tColHdrs += '条件'
-                        }
                     }
 
                     $trRows = New-Object System.Collections.Generic.List[object]
@@ -5755,8 +5759,10 @@ function Parse-MarkdownFile {
                             if ($ck -eq 'from') { $cv = $fromCell }
                             elseif ($ck -eq 'to') { $cv = $toCell }
                             elseif ($ck -eq 'actor') { $cv = $actorCell }
-                            elseif ($ck -eq 'trigger') { $cv = $tr.Trigger }
-                            elseif ($ck -eq 'screen') { $cv = $tr.Screen }
+                            elseif ($ck -eq 'startTrigger') { $cv = $tr.StartTrigger }
+                            elseif ($ck -eq 'endTrigger') { $cv = $tr.EndTrigger }
+                            elseif ($ck -eq 'startScreen') { $cv = $tr.StartScreen }
+                            elseif ($ck -eq 'endScreen') { $cv = $tr.EndScreen }
                             elseif ($ck -eq 'notes') { $cv = $tr.Notes }
                             elseif ($ck -eq 'condition') { $cv = if ($null -ne $tr.Condition) { $tr.Condition } else { '' } }
                             else {
@@ -5837,9 +5843,11 @@ function Parse-MarkdownFile {
                             @{ Text = 'ヘッダー状態(to)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
                             @{ Text = '回次状態(from)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
                             @{ Text = '回次状態(to)'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '操作'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '開始画面'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '開始操作'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '終了画面'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
+                            @{ Text = '終了操作'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
                             @{ Text = '実行ロール'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
-                            @{ Text = '画面'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
                             @{ Text = '条件'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
                             @{ Text = 'ロック要否'; RowSpan = 1; ColSpan = 1; IsHeader = $true },
                             @{ Text = '備考'; RowSpan = 1; ColSpan = 1; IsHeader = $true }
@@ -5851,16 +5859,18 @@ function Parse-MarkdownFile {
                                 @{ Text = [string]$r.HeaderTo; RowSpan = 1; ColSpan = 1; IsHeader = $false },
                                 @{ Text = [string]$r.RoundFrom; RowSpan = 1; ColSpan = 1; IsHeader = $false },
                                 @{ Text = [string]$r.RoundTo; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.Trigger; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.StartScreen; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.StartTrigger; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.EndScreen; RowSpan = 1; ColSpan = 1; IsHeader = $false },
+                                @{ Text = [string]$r.EndTrigger; RowSpan = 1; ColSpan = 1; IsHeader = $false },
                                 @{ Text = [string]$r.Actor; RowSpan = 1; ColSpan = 1; IsHeader = $false },
-                                @{ Text = [string]$r.Screen; RowSpan = 1; ColSpan = 1; IsHeader = $false },
                                 @{ Text = [string]$r.Condition; RowSpan = 1; ColSpan = 1; IsHeader = $false },
                                 @{ Text = [string]$r.Lock; RowSpan = 1; ColSpan = 1; IsHeader = $false },
                                 @{ Text = [string]$r.Notes; RowSpan = 1; ColSpan = 1; IsHeader = $false }
                             ))
                     }
                     $elements.Add((New-Element -Type 'table' -Data @{
-                                tableInfo  = [pscustomobject]@{ Rows = $cmbRows.ToArray(); MaxColumns = 11 }
+                                tableInfo  = [pscustomobject]@{ Rows = $cmbRows.ToArray(); MaxColumns = 13 }
                                 Caption    = $null
                                 Attributes = @{ 'options' = 'header' }
                             }))
