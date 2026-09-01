@@ -111,7 +111,7 @@ $ErrorActionPreference = 'Stop'
 $Script:ConverterVersion = 'ps51-v2-20260416'
 $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
 
-Write-Output "$TIMESTAMP Convert-AsciiDocToWord version: $Script:ConverterVersion"
+Write-Output "$TIMESTAMP Convert-MarkdownToWord version: $Script:ConverterVersion"
 
 function Convert-RgbToWordColor {
     param([string]$RgbHex)

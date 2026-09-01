@@ -16,14 +16,14 @@ del /f /q /s "%ADOCBASEPATH%out" 2>nul
 echo START %ADOC_NAME% Word Convert
 
 powershell -NoProfile -ExecutionPolicy Bypass ^
-  -File "%SCRIPTBASEPATH%\Convert-AsciiDocToWord.ps1" ^
+  -File "%SCRIPTBASEPATH%\Convert-MarkdownToWord.ps1" ^
   -AdocFullPath "%ADOCBASEPATH%%ADOC_NAME%.adoc" ^
   -OutputFullPath "%ADOCBASEPATH%out\%ADOC_NAME%.docx" ^
   -ConfigFullPath "%ADOCBASEPATH%conf/word-style.sample.json"
 
 set ADOC_NAME=AsciiDocToWord
 powershell -NoProfile -ExecutionPolicy Bypass ^
-  -File "%SCRIPTBASEPATH%\Convert-AsciiDocToWord.ps1" ^
+  -File "%SCRIPTBASEPATH%\Convert-MarkdownToWord.ps1" ^
   -AdocFullPath "%ADOCBASEPATH%%ADOC_NAME%.adoc" ^
   -OutputFullPath "%ADOCBASEPATH%out\%ADOC_NAME%.docx" ^
   -ConfigFullPath "%ADOCBASEPATH%conf/word-style.sample.json"

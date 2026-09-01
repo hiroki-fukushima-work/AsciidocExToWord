@@ -1,5 +1,5 @@
 # Requires Pester 3.x
-$scriptPath = Join-Path $PSScriptRoot 'Convert-AsciiDocToWord.ps1'
+$scriptPath = Join-Path $PSScriptRoot 'Convert-MarkdownToWord.ps1'
 . $scriptPath -TestMode
 
 function New-TempJson {
