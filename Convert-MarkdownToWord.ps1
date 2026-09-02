@@ -1544,6 +1544,32 @@ function Replace-WordText {
     ) | Out-Null
 }
 
+function Get-DefaultTableColumnRatios {
+    param(
+        [object[]]$Rows,
+        [int]$ColumnCount
+    )
+
+    $ratios = @(for ($i = 0; $i -lt $ColumnCount; $i++) { 1.0 })
+    if (-not $Rows -or $Rows.Count -eq 0) {
+        return $ratios
+    }
+
+    for ($i = 0; $i -lt [Math]::Min($Rows[0].Count, $ColumnCount); $i++) {
+        $header = [string]$Rows[0][$i].Text
+        if ($header -match '^(#|No\.?|項番|番号)$') {
+            $ratios[$i] = 0.45
+        }
+        elseif ($header -match '^(備考|説明|詳細|内容|理由|条件|備考欄)$') {
+            $ratios[$i] = 2.4
+        }
+        elseif ($header -match '^(項目|項目名|種別|区分|ID|名称|状態|値|ロール)$') {
+            $ratios[$i] = 0.9
+        }
+    }
+    return $ratios
+}
+
 function Add-WordTable {
     param(
         $Document,
@@ -1643,6 +1669,11 @@ function Add-WordTable {
         }
     }
     $table.Rows(1).HeadingFormat = -1
+    # 繰り返し見出しだけが前ページに残らないよう、最初のデータ行と同じページに配置する。
+    try {
+        $table.Rows(1).Range.ParagraphFormat.KeepWithNext = $true
+    }
+    catch {}
 
     # ---- テキスト投入
     for ($r = 0; $r -lt $Rows.Count; $r++) {
@@ -1719,6 +1750,16 @@ function Add-WordTable {
         }
     }
 
+    # ---- 縦書きヘッダー: options="...,vertical-header" または [vertical-header] で指定
+    $hasVerticalHeader = $false
+    if ($Attributes) {
+        if ($Attributes.ContainsKey('options') -and ([string]$Attributes['options']) -match 'vertical-header') {
+            $hasVerticalHeader = $true
+        }
+        elseif ($Attributes.Values -contains 'vertical-header') {
+            $hasVerticalHeader = $true
+        }
+    }
 
     try {
         $pageWidth = $Document.PageSetup.PageWidth
@@ -1771,14 +1812,21 @@ function Add-WordTable {
             }
         }
         else {
-            $colDefs = @(for ($i = 0; $i -lt $ColumnCount; $i++) { 11 }) | ForEach-Object {
+            $defaultRatios = Get-DefaultTableColumnRatios -Rows $Rows -ColumnCount $ColumnCount
+            $colDefs = $defaultRatios | ForEach-Object {
                 [PSCustomObject]@{
                     Ratio      = $_
                     Align      = $null
                     IsAsciiDoc = $false
                 }
             }
-            
+        }
+
+        if ($hasVerticalHeader -and -not ($Attributes -and $Attributes.ContainsKey('cols'))) {
+            # 縦書きヘッダーのマトリックスは、項目列に幅を寄せて判定列を詰める。
+            for ($i = 0; $i -lt $colDefs.Count; $i++) {
+                $colDefs[$i].Ratio = if ($i -eq 0 -and -not $globalAutoNumberColumn) { 2.4 } elseif ($i -eq 1 -and $globalAutoNumberColumn) { 2.4 } else { 0.55 }
+            }
         }
         $ratios = $colDefs | ForEach-Object { $_.Ratio }
 
@@ -1856,17 +1904,6 @@ function Add-WordTable {
         }
     }
 
-    # ---- 縦書きヘッダー: options="...,vertical-header" または [vertical-header] で指定
-    $hasVerticalHeader = $false
-    if ($Attributes) {
-        if ($Attributes.ContainsKey('options') -and ([string]$Attributes['options']) -match 'vertical-header') {
-            $hasVerticalHeader = $true
-        }
-        elseif ($Attributes.Values -contains 'vertical-header') {
-            $hasVerticalHeader = $true
-        }
-    }
-
     if ($hasVerticalHeader) {
         $isHeaderOpt = $Attributes.ContainsKey('options') -and ([string]$Attributes['options']) -match 'header'
         for ($r = 0; $r -lt $Rows.Count; $r++) {
@@ -1880,7 +1917,7 @@ function Add-WordTable {
                 if ($isHdrCell) {
                     try {
                         $tc = $table.Cell($r + 1, $c + 1)
-                        $tc.Range.Orientation = 3   # wdTextOrientationUpward (下→上, 90度)
+                        $tc.Range.Orientation = 2   # wdTextOrientationUpward (左90度)
                         $tc.VerticalAlignment = 1   # wdCellAlignVerticalCenter
                     }
                     catch {}
@@ -5659,10 +5696,12 @@ function Parse-MarkdownFile {
             continue
         }
 
-        # !include-json-workflow[path]
+        # !include-json-workflow[path] / !include-json-workflow[path,transitions=false]
         if ($trimmed -match '^!include-json-workflow\[([^\]]+)\]$') {
             Flush-MdParagraph
-            $jsonRef = $matches[1].Trim()
+            $directiveArgs = @($matches[1] -split ',' | ForEach-Object { $_.Trim() })
+            $jsonRef = $directiveArgs[0]
+            $includeTransitionTable = -not ($directiveArgs | Where-Object { $_ -match '^transitions=false$' })
             $jsonResult = Invoke-JsonWorkflowDirective -FilePath $jsonRef -BaseDirectory $fileDir
             if ($jsonResult.Success) {
                 $wfActors = $jsonResult.Actors
@@ -5716,8 +5755,9 @@ function Parse-MarkdownFile {
                                 Attributes = @{ 'options' = 'header' }
                             }))
 
-                    # Transitions table
-                    $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = '状態遷移一覧' }))
+                    if ($includeTransitionTable) {
+                        # Transitions table
+                        $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = '状態遷移一覧' }))
                     # 状態遷移一覧テーブルの列は wf.ColDefs（YAML transitionColumns）の宣言順・宣言内容をそのまま採用する
                     $tColKeys = @()
                     $tColHdrs = @()
@@ -5777,11 +5817,12 @@ function Parse-MarkdownFile {
                         $trRows.Add($dCells)
                     }
 
-                    $elements.Add((New-Element -Type 'table' -Data @{
+                        $elements.Add((New-Element -Type 'table' -Data @{
                                 tableInfo  = [pscustomobject]@{ Rows = $trRows.ToArray(); MaxColumns = ($tColKeys.Count + 1) }
                                 Caption    = $null
                                 Attributes = @{ 'options' = 'header' }
                             }))
+                    }
 
                     # PlantUML state diagrams (render if PlantUML is configured; fall back to code block)
                     # 見出しに対象ワークフロー名を含め、複数ワークフローが並ぶ文書内でも「何の状態遷移図か」が分かるようにする
@@ -5940,8 +5981,25 @@ try {
             if (Test-Path -LiteralPath $attachSourceDir -PathType Container) {
                 $attachTargetDir = Join-Path $targetDir $attachSubdir
                 [void](New-Item -ItemType Directory -Path $attachTargetDir -Force -ErrorAction SilentlyContinue)
-                Copy-Item -Path (Join-Path $attachSourceDir '*') -Destination $attachTargetDir -Recurse -Force
-                Write-Output "添付ファイルをコピーしました: $attachSourceDir -> $attachTargetDir"
+                $copySucceeded = $false
+                for ($retry = 0; $retry -lt 3; $retry++) {
+                    try {
+                        Copy-Item -Path (Join-Path $attachSourceDir '*') -Destination $attachTargetDir -Recurse -Force -ErrorAction Stop
+                        $copySucceeded = $true
+                        break
+                    }
+                    catch {
+                        if ($retry -lt 2) {
+                            Start-Sleep -Milliseconds 500
+                        }
+                    }
+                }
+                if ($copySucceeded) {
+                    Write-Output "添付ファイルをコピーしました: $attachSourceDir -> $attachTargetDir"
+                }
+                else {
+                    Write-Output "警告: 添付ファイルをコピーできませんでした（使用中の可能性があります）: $attachTargetDir"
+                }
             }
         }
         catch {
