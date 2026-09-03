@@ -3099,6 +3099,9 @@ function Build-WordDocument {
                 -Path $templatePath 
             
             $document = $word.Documents.Open($templatePath, $false, $true)
+            if (Test-Path -LiteralPath $absoluteOutput) {
+                Remove-Item -LiteralPath $absoluteOutput -Force
+            }
             $document.SaveAs($absoluteOutput)
 
             #
@@ -5844,7 +5847,10 @@ function Parse-MarkdownFile {
                         $elements.Add((New-Element -Type 'code' -Data @{ Text = $pumlFull; Caption = $null }))
                     }
 
-                    if ($wf.HasConditions) {
+                    $hasPaymentTimingCondition = $wf.Transitions |
+                        Where-Object { [string]$_.Condition -match 'paymentTimingType\s*=' } |
+                        Select-Object -First 1
+                    if ($null -ne $hasPaymentTimingCondition) {
                         $elements.Add((New-Element -Type 'heading' -Data @{ Level = (3 + $LevelOffset); Text = "$wfDiagramTitle（前払い）" }))
                         $pumlPre = Build-WorkflowPlantUml -Workflow $wf -Actors $wfActors -Filter 'PREPAID'
                         $preOpts = @{ target = "wf-$($wf.Key)-prepaid" }
@@ -5972,8 +5978,8 @@ try {
             $TIMESTAMP = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
             Write-Output "$TIMESTAMP 変換完了: $outputFullPath"
 
-            # 添付ファイル（chapters/excel 等、Word本文に埋め込まない別紙）を出力先へコピーする
-            $attachSubdir = 'excel'
+            # 添付ファイル（chapters/appendices 等、Word本文に埋め込まない別紙）を出力先へコピーする
+            $attachSubdir = 'appendices'
             if ($config.Document -and $config.Document.PSObject.Properties.Name -contains 'AttachmentsSubdir' -and $config.Document.AttachmentsSubdir) {
                 $attachSubdir = [string]$config.Document.AttachmentsSubdir
             }
